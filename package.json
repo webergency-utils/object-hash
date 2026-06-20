@@ -1,0 +1,41 @@
+{
+  "name": "@webergency-utils/object-hash",
+  "version": "0.0.1",
+  "description": "",
+  "author": "radixxko",
+  "license": "MIT",
+  "main": "dist/hash.js",
+  "module": "dist/esm/hash.js",
+  "types": "dist/hash.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/esm/hash.d.ts",
+        "default": "./dist/esm/hash.js"
+      },
+      "require": {
+        "types": "./dist/hash.d.ts",
+        "default": "./dist/hash.js"
+      }
+    }
+  },
+  "files": [
+    "dist/**/*"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "coverage": "vitest run --coverage",
+    "build": "tsc && tsc -p tsconfig.esm.json && echo '{\"type\":\"module\"}' > dist/esm/package.json",
+    "version": "npm i && npm run build && npm publish --access public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/webergency-utils/object-hash.git"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "@vitest/coverage-v8": "^4.1.9",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  }
+}
