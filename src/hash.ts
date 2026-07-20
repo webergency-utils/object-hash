@@ -110,9 +110,32 @@ function digestToString( hasher: any, encoding?: 'hex' | 'base36' | 'base62' | '
 
 const HashIndex = new WeakMap<Function | object, string>();
 
-const MODULE_RANDOM_PREFIX = Math.floor( Math.random() * 0x100000000 ).toString( 36 );
-let nextID = 0;
-const randomID = () => MODULE_RANDOM_PREFIX + '_' + ( ++nextID );
+const randomID = (): string =>
+{
+    if( typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function' )
+    {
+        const arr = new Uint8Array( 16 );
+        crypto.getRandomValues( arr );
+
+        return Array.from( arr, byte => byte.toString( 16 ).padStart( 2, '0' ) ).join( '' );
+    }
+
+    try
+    {
+        const nodeCrypto = require( 'crypto' );
+
+        if( typeof nodeCrypto.randomBytes === 'function' )
+        {
+            return nodeCrypto.randomBytes( 16 ).toString( 'hex' );
+        }
+    }
+    catch( _ )
+    {
+        // Fallback
+    }
+
+    return Math.random().toString( 36 ).slice( 2 ) + Math.random().toString( 36 ).slice( 2 );
+};
 
 function isPlainObject( val: any ): boolean
 {
@@ -160,6 +183,9 @@ type BaseOptions = {
     stringify?                  : ( obj: object ) => string | undefined
     bitLength?                  : 64 | 96 | 128 | 192 | 256
     encoding?                   : 'hex' | 'base36' | 'base62' | 'base64' | 'base64url'
+    excludeKeys?                : string[]
+    includeKeys?                : string[]
+    excludeValues?              : boolean
 }
 
 type AlgorithmOptions = BaseOptions & {
@@ -267,9 +293,23 @@ function _objectStringify( obj: any, visited: Set<any>, options: ObjectStringify
             return;
         }
 
+        if( typeof URLSearchParams !== 'undefined' && obj instanceof URLSearchParams )
+        {
+            hasher.update( 'URLSearchParams(' + obj.toString() + ')' );
+
+            return;
+        }
+
         if( obj instanceof String || obj instanceof Number || obj instanceof Boolean )
         {
             hasher.update( JSON.stringify( obj.valueOf() ));
+
+            return;
+        }
+
+        if( typeof Symbol !== 'undefined' && obj instanceof Symbol )
+        {
+            hasher.update( 'Symbol(' + ( obj.valueOf().description || '' ) + ')' );
 
             return;
         }
@@ -321,6 +361,43 @@ function _objectStringify( obj: any, visited: Set<any>, options: ObjectStringify
 
             entries.sort();
             hasher.update( 'Map(' + entries.join( ',' ) + ')' );
+
+            return;
+        }
+
+        if( obj instanceof Promise )
+        {
+            hasher.update( 'Promise(pending)' );
+
+            return;
+        }
+
+        if( typeof WeakRef !== 'undefined' && obj instanceof WeakRef )
+        {
+            hasher.update( 'WeakRef(' );
+            _objectStringify( obj.deref(), visited, options, hasher );
+            hasher.update( ')' );
+
+            return;
+        }
+
+        if( typeof WeakMap !== 'undefined' && obj instanceof WeakMap )
+        {
+            hasher.update( 'WeakMap(opaque)' );
+
+            return;
+        }
+
+        if( typeof WeakSet !== 'undefined' && obj instanceof WeakSet )
+        {
+            hasher.update( 'WeakSet(opaque)' );
+
+            return;
+        }
+
+        if( typeof obj.toJSON === 'function' )
+        {
+            _objectStringify( obj.toJSON(), visited, options, hasher );
 
             return;
         }
@@ -380,10 +457,34 @@ function _objectStringify( obj: any, visited: Set<any>, options: ObjectStringify
 
         const sortedKeys = keys.sort(( a, b ) =>
         {
+            if( a === b ){ return 0 }
+
             const aStr = typeof a === 'symbol' ? 'Symbol(' + ( a.description || '' ) + ')' : a;
             const bStr = typeof b === 'symbol' ? 'Symbol(' + ( b.description || '' ) + ')' : b;
 
-            return aStr === bStr ? 0 : aStr > bStr ? 1 : -1;
+            if( aStr === bStr )
+            {
+                if( typeof a === 'symbol' && typeof b === 'symbol' )
+                {
+                    const aValAccumulator = new StringAccumulator();
+                    _objectStringify( obj[a], new Set( visited ), options, aValAccumulator );
+
+                    const bValAccumulator = new StringAccumulator();
+                    _objectStringify( obj[b], new Set( visited ), options, bValAccumulator );
+
+                    const aValStr = aValAccumulator.toString();
+                    const bValStr = bValAccumulator.toString();
+
+                    if( aValStr !== bValStr )
+                    {
+                        return aValStr > bValStr ? 1 : -1;
+                    }
+                }
+
+                return 0;
+            }
+
+            return aStr > bStr ? 1 : -1;
         });
 
         hasher.update( '{' );
@@ -393,6 +494,16 @@ function _objectStringify( obj: any, visited: Set<any>, options: ObjectStringify
         for( let i = 0; i < sortedKeys.length; ++i )
         {
             const key = sortedKeys[i];
+
+            if( typeof key === 'string' )
+            {
+                if( options.includeKeys )
+                {
+                    if( !options.includeKeys.includes( key )){ continue }
+                }
+                else if( options.excludeKeys && options.excludeKeys.includes( key )){ continue }
+            }
+
             const val = obj[key];
 
             if( options.ignoreUndefinedProperties && val === undefined ){ continue }
@@ -402,7 +513,12 @@ function _objectStringify( obj: any, visited: Set<any>, options: ObjectStringify
             const kStr = typeof key === 'symbol' ? 'Symbol(' + ( key.description || '' ) + ')' : JSON.stringify( key );
 
             hasher.update( kStr + ':' );
-            _objectStringify( val, visited, options, hasher );
+
+            if( !options.excludeValues )
+            {
+                _objectStringify( val, visited, options, hasher );
+            }
+
             hasWritten = true;
         }
 
@@ -427,24 +543,36 @@ function resolveAlgorithm( alg?: 'cyrb64' | 'murmur3' | 'sha256' | 'fast' | 'bal
 
 export function objectStringify( obj: any, options: Partial<ObjectStringifyOptions> = {} ): string
 {
-    const { sortArrays = false, ignoreUndefinedProperties = true, stringify } = options;
+    const { sortArrays = false, ignoreUndefinedProperties = true, stringify, excludeKeys, includeKeys, excludeValues } = options;
     const accumulator = new StringAccumulator();
 
-    _objectStringify( obj, new Set(), { sortArrays, ignoreUndefinedProperties, stringify } as any, accumulator );
+    _objectStringify( obj, new Set(), { sortArrays, ignoreUndefinedProperties, stringify, excludeKeys, includeKeys, excludeValues } as any, accumulator );
 
     return accumulator.toString();
 }
 
 export default function objectHash( obj: any, options: Partial<ObjectStringifyOptions> = {} ): string
 {
-    const { sortArrays = false, ignoreUndefinedProperties = true, stringify, bitLength = 64, algorithm = 'fast', encoding = 'base36', hasher } = options;
+    const { sortArrays = false, ignoreUndefinedProperties = true, stringify, bitLength = 64, algorithm = 'fast', encoding = 'base36', hasher, excludeKeys, includeKeys, excludeValues } = options;
 
     const resolvedAlg = resolveAlgorithm( algorithm );
     const mainHasher = createHasher( hasher || ( resolvedAlg === 'murmur3' ? MurmurHash3 : ( resolvedAlg === 'cyrb64' ? Cyrb64Hash : resolvedAlg ) ), bitLength );
 
-    _objectStringify( obj, new Set(), { sortArrays, ignoreUndefinedProperties, stringify } as any, mainHasher );
+    _objectStringify( obj, new Set(), { sortArrays, ignoreUndefinedProperties, stringify, excludeKeys, includeKeys, excludeValues } as any, mainHasher );
 
     return digestToString( mainHasher, encoding );
+}
+
+export function objectHashBytes( obj: any, options: Partial<ObjectStringifyOptions> = {} ): Uint8Array
+{
+    const { sortArrays = false, ignoreUndefinedProperties = true, stringify, bitLength = 64, algorithm = 'fast', hasher, excludeKeys, includeKeys, excludeValues } = options;
+
+    const resolvedAlg = resolveAlgorithm( algorithm );
+    const mainHasher = createHasher( hasher || ( resolvedAlg === 'murmur3' ? MurmurHash3 : ( resolvedAlg === 'cyrb64' ? Cyrb64Hash : resolvedAlg ) ), bitLength );
+
+    _objectStringify( obj, new Set(), { sortArrays, ignoreUndefinedProperties, stringify, excludeKeys, includeKeys, excludeValues } as any, mainHasher );
+
+    return (mainHasher as HasherAdapter).digest();
 }
 
 export class Hasher
@@ -464,5 +592,60 @@ export class Hasher
     hash( obj: any ): string
     {
         return objectHash( obj, this.#options );
+    }
+
+    createHash(): StreamingHash
+    {
+        return new StreamingHash( this.#options );
+    }
+}
+
+export class StreamingHash
+{
+    #options: Partial<ObjectStringifyOptions>;
+    #accumulator: StringAccumulator;
+
+    constructor( options: Partial<ObjectStringifyOptions> = {} )
+    {
+        this.#options = options;
+        this.#accumulator = new StringAccumulator();
+    }
+
+    update( obj: any ): this
+    {
+        const { sortArrays = false, ignoreUndefinedProperties = true, stringify, excludeKeys, includeKeys, excludeValues } = this.#options;
+
+        _objectStringify( obj, new Set(), { sortArrays, ignoreUndefinedProperties, stringify, excludeKeys, includeKeys, excludeValues } as any, this.#accumulator );
+
+        return this;
+    }
+
+    digest(): string
+    {
+        const { bitLength = 64, algorithm = 'fast', encoding = 'base36', hasher } = this.#options;
+        const resolvedAlg = resolveAlgorithm( algorithm );
+        const mainHasher = createHasher( hasher || ( resolvedAlg === 'murmur3' ? MurmurHash3 : ( resolvedAlg === 'cyrb64' ? Cyrb64Hash : resolvedAlg ) ), bitLength );
+
+        mainHasher.update( this.#accumulator.toString() );
+
+        return digestToString( mainHasher, encoding );
+    }
+
+    digestBytes(): Uint8Array
+    {
+        const { bitLength = 64, algorithm = 'fast', hasher } = this.#options;
+        const resolvedAlg = resolveAlgorithm( algorithm );
+        const mainHasher = createHasher( hasher || ( resolvedAlg === 'murmur3' ? MurmurHash3 : ( resolvedAlg === 'cyrb64' ? Cyrb64Hash : resolvedAlg ) ), bitLength );
+
+        mainHasher.update( this.#accumulator.toString() );
+
+        return (mainHasher as HasherAdapter).digest();
+    }
+
+    reset(): this
+    {
+        this.#accumulator = new StringAccumulator();
+
+        return this;
     }
 }

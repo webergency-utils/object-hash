@@ -5,7 +5,7 @@ import
     expect 
 } 
 from 'vitest';
-import objectHash, { objectStringify, Hasher } from '../hash';
+import objectHash, { objectStringify, Hasher, objectHashBytes, StreamingHash } from '../hash';
 import 
 { 
     bytesToHex,
@@ -751,5 +751,556 @@ describe( 'object-hash tests', () =>
             const expectedHash = objectHash( obj, { sortArrays: true, encoding: 'hex' });
             expect( hasher.hash( obj )).toBe( expectedHash );
         });
+    });
+
+    describe( 'Additional Coverage Tests', () =>
+    {
+        test( 'should fall back to default serialization if stringify returns undefined', () =>
+        {
+            const obj = { a: 1, b: 2 };
+            const hashVal = objectHash( obj, { stringify: () => undefined } );
+            const normalHash = objectHash( obj );
+            expect( hashVal ).toBe( normalHash );
+        });
+
+        test( 'should deterministically hash objects with Symbol keys', () =>
+        {
+            const sym1 = Symbol( 'desc1' );
+            const sym2 = Symbol( 'desc2' );
+            const symNoDesc = Symbol();
+
+            const obj1 = {
+                [sym2]: 'value2',
+                [sym1]: 'value1',
+                [symNoDesc]: 'nodesc',
+                normalKey: 'normal'
+            };
+
+            const obj2 = {
+                [symNoDesc]: 'nodesc',
+                normalKey: 'normal',
+                [sym2]: 'value2',
+                [sym1]: 'value1'
+            };
+
+            expect( objectHash( obj1 ) ).toBe( objectHash( obj2 ) );
+
+            const stringified = objectStringify( obj1 );
+            expect( stringified ).toContain( 'Symbol(desc1)' );
+            expect( stringified ).toContain( 'Symbol(desc2)' );
+            expect( stringified ).toContain( 'Symbol()' );
+        });
+
+        test( 'should support native crypto algorithms and throw on unsupported algorithms', () =>
+        {
+            const obj = { test: 'data' };
+
+            const hashSha = objectHash( obj, { algorithm: 'sha256' } );
+            const hashStrong = objectHash( obj, { algorithm: 'strong' } );
+            expect( hashSha ).toBe( hashStrong );
+
+            expect( () => objectHash( obj, { algorithm: 'unknown' } ) ).toThrowError( 'Unsupported hashing algorithm: unknown' );
+        });
+
+        test( 'MurmurHash3 should handle empty string/bytes updates', () =>
+        {
+            const hasher = new MurmurHash3();
+            hasher.update( '' );
+            hasher.updateBytes( new Uint8Array() );
+            const digest = hasher.digest();
+            expect( digest ).toBeInstanceOf( Uint8Array );
+            expect( digest.length ).toBe( 8 );
+        });
+
+        test( 'MurmurHash3 should process all tail sizes (1 to 15 bytes) correctly', () =>
+        {
+            for( let len = 1; len <= 15; ++len )
+            {
+                const bytes = new Uint8Array( len );
+                for ( let i = 0; i < len; ++i ) { bytes[i] = i + 1; }
+
+                const hasher = new MurmurHash3( 128 );
+                hasher.updateBytes( bytes );
+                const digest = hasher.digest();
+
+                expect( digest.length ).toBe( 16 );
+            }
+        });
+
+        test( 'should respect custom toJSON methods on plain objects and custom class instances', () =>
+        {
+            const objWithToJSON = {
+                a: 1,
+                toJSON: () => ( { custom: 'serialized' } )
+            };
+
+            class CustomClassWithToJSON
+            {
+                toJSON()
+                {
+                    return 'customString';
+                }
+            }
+
+            expect( objectStringify( objWithToJSON ) ).toBe( '{"custom":"serialized"}' );
+            expect( objectStringify( new CustomClassWithToJSON() ) ).toBe( '"customString"' );
+        });
+
+        test( 'should support boxed Symbols by value rather than reference', () =>
+        {
+            const boxedSym1 = Object( Symbol( 'description' ) );
+            const boxedSym2 = Object( Symbol( 'description' ) );
+
+            expect( objectStringify( boxedSym1 ) ).toBe( 'Symbol(description)' );
+            expect( objectHash( boxedSym1 ) ).toBe( objectHash( boxedSym2 ) );
+        });
+
+        test( 'should serialize and hash URLSearchParams by value', () =>
+        {
+            const params1 = new URLSearchParams( 'a=1&b=2' );
+            const params2 = new URLSearchParams( 'a=1&b=2' );
+            const params3 = new URLSearchParams( 'a=2&b=3' );
+
+            expect( objectStringify( params1 ) ).toBe( 'URLSearchParams(a=1&b=2)' );
+            expect( objectHash( params1 ) ).toBe( objectHash( params2 ) );
+            expect( objectHash( params1 ) ).not.toBe( objectHash( params3 ) );
+        });
+
+        test( 'should sort Symbol keys deterministically even with identical descriptions', () =>
+        {
+            const sym1 = Symbol( 'same' );
+            const sym2 = Symbol( 'same' );
+
+            const obj1 = {
+                [sym2]: 'value2',
+                [sym1]: 'value1'
+            };
+
+            const obj2 = {
+                [sym1]: 'value1',
+                [sym2]: 'value2'
+            };
+
+            expect( objectHash( obj1 ) ).toBe( objectHash( obj2 ) );
+        });
+
+        test( 'should sort Symbol keys deterministically regardless of other symbols hashed prior in the process', () =>
+        {
+            const otherSym = Symbol( 'same' );
+            objectHash( { [otherSym]: 'other' } );
+
+            const sym1 = Symbol( 'same' );
+            const sym2 = Symbol( 'same' );
+
+            const obj1 = {
+                [sym2]: 'value2',
+                [sym1]: 'value1'
+            };
+
+            const obj2 = {
+                [sym1]: 'value1',
+                [sym2]: 'value2'
+            };
+
+            expect( objectHash( obj1 ) ).toBe( objectHash( obj2 ) );
+        });
+
+        test( 'should hash references deterministically in the same process regardless of other objects hashed prior', () =>
+        {
+            const fn = () => {};
+            const hash1 = objectHash( { f: fn } );
+
+            objectHash( { f: () => {} } );
+            objectHash( { f: () => {} } );
+
+            const hash2 = objectHash( { f: fn } );
+            expect( hash1 ).toBe( hash2 );
+        });
+
+        test( 'randomID should fall back to Node crypto and Math.random if Web Crypto is unavailable', () =>
+        {
+            const originalCrypto = (globalThis as any).crypto;
+
+            try
+            {
+                delete (globalThis as any).crypto;
+
+                const fn1 = () => {};
+                const hash1 = objectHash( { f: fn1 } );
+                expect( typeof hash1 ).toBe( 'string' );
+
+                const nodeCrypto = require( 'crypto' );
+                const originalRandomBytes = nodeCrypto.randomBytes;
+                try
+                {
+                    nodeCrypto.randomBytes = undefined;
+
+                    const fn2 = () => {};
+                    const hash2 = objectHash( { f: fn2 } );
+                    expect( typeof hash2 ).toBe( 'string' );
+                }
+                finally
+                {
+                    nodeCrypto.randomBytes = originalRandomBytes;
+                }
+            }
+            finally
+            {
+                (globalThis as any).crypto = originalCrypto;
+            }
+        });
+
+    describe( 'excludeKeys option', () =>
+    {
+        test( 'should exclude specified keys at top level', () =>
+        {
+            const obj = { a: 1, b: 2, _id: 'abc', updatedAt: 12345 };
+            const hash1 = objectHash( obj, { excludeKeys: ['_id', 'updatedAt'] } );
+            const hash2 = objectHash( { a: 1, b: 2 } );
+
+            expect( hash1 ).toBe( hash2 );
+        });
+
+        test( 'should exclude keys recursively in nested objects', () =>
+        {
+            const obj = { a: 1, nested: { b: 2, _id: 'inner' } };
+            const hash1 = objectHash( obj, { excludeKeys: ['_id'] } );
+            const hash2 = objectHash( { a: 1, nested: { b: 2 } } );
+
+            expect( hash1 ).toBe( hash2 );
+        });
+
+        test( 'should not affect Symbol keys', () =>
+        {
+            const sym = Symbol( 'keep' );
+            const obj = { _id: 'skip', [sym]: 'value' };
+            const hash1 = objectHash( obj, { excludeKeys: ['_id'] } );
+
+            expect( typeof hash1 ).toBe( 'string' );
+            expect( hash1.length ).toBeGreaterThan( 0 );
+        });
+    });
+
+    describe( 'includeKeys option', () =>
+    {
+        test( 'should include only specified keys at top level', () =>
+        {
+            const obj = { a: 1, b: 2, c: 3, d: 4 };
+            const hash1 = objectHash( obj, { includeKeys: ['a', 'b'] } );
+            const hash2 = objectHash( { a: 1, b: 2 } );
+
+            expect( hash1 ).toBe( hash2 );
+        });
+
+        test( 'should include keys recursively in nested objects', () =>
+        {
+            const obj = { a: 1, nested: { b: 2, c: 3 } };
+            const hash1 = objectHash( obj, { includeKeys: ['a', 'nested', 'b'] } );
+            const hash2 = objectHash( { a: 1, nested: { b: 2 } } );
+
+            expect( hash1 ).toBe( hash2 );
+        });
+
+        test( 'should take precedence over excludeKeys when both are specified', () =>
+        {
+            const obj = { a: 1, b: 2, c: 3 };
+            const hash1 = objectHash( obj, { includeKeys: ['a', 'b'], excludeKeys: ['a'] } );
+            const hash2 = objectHash( { a: 1, b: 2 } );
+
+            expect( hash1 ).toBe( hash2 );
+        });
+    });
+
+    describe( 'excludeValues option', () =>
+    {
+        test( 'should hash only the object shape when excludeValues is true', () =>
+        {
+            const obj1 = { a: 1, b: 'hello', c: true };
+            const obj2 = { a: 999, b: 'world', c: false };
+            const hash1 = objectHash( obj1, { excludeValues: true } );
+            const hash2 = objectHash( obj2, { excludeValues: true } );
+
+            expect( hash1 ).toBe( hash2 );
+        });
+
+        test( 'should produce different hashes for different shapes', () =>
+        {
+            const obj1 = { a: 1, b: 2 };
+            const obj2 = { a: 1, c: 2 };
+            const hash1 = objectHash( obj1, { excludeValues: true } );
+            const hash2 = objectHash( obj2, { excludeValues: true } );
+
+            expect( hash1 ).not.toBe( hash2 );
+        });
+
+        test( 'should apply recursively to nested objects', () =>
+        {
+            const obj1 = { a: { b: 1 } };
+            const obj2 = { a: { b: 999 } };
+            const hash1 = objectHash( obj1, { excludeValues: true } );
+            const hash2 = objectHash( obj2, { excludeValues: true } );
+
+            expect( hash1 ).toBe( hash2 );
+        });
+
+        test( 'should work with objectStringify', () =>
+        {
+            const str1 = objectStringify( { a: 1, b: 2 }, { excludeValues: true } );
+            const str2 = objectStringify( { a: 100, b: 200 }, { excludeValues: true } );
+
+            expect( str1 ).toBe( str2 );
+        });
+    });
+
+    describe( 'Promise handling', () =>
+    {
+        test( 'should serialize Promise as Promise(pending)', () =>
+        {
+            const p = new Promise( () => {} );
+            const str = objectStringify( p );
+
+            expect( str ).toBe( 'Promise(pending)' );
+        });
+
+        test( 'should produce identical hashes for different Promises', () =>
+        {
+            const p1 = new Promise( () => {} );
+            const p2 = Promise.resolve( 42 );
+
+            expect( objectHash( p1 ) ).toBe( objectHash( p2 ) );
+        });
+    });
+
+    describe( 'WeakRef / WeakMap / WeakSet handling', () =>
+    {
+        test( 'should hash WeakRef by dereferencing its target', () =>
+        {
+            const target = { x: 42 };
+            const ref = new WeakRef( target );
+            const str = objectStringify( ref );
+
+            expect( str ).toBe( 'WeakRef(' + objectStringify( target ) + ')' );
+        });
+
+        test( 'should serialize WeakMap as opaque', () =>
+        {
+            const wm = new WeakMap();
+            wm.set( {}, 'value' );
+            const str = objectStringify( wm );
+
+            expect( str ).toBe( 'WeakMap(opaque)' );
+        });
+
+        test( 'should serialize WeakSet as opaque', () =>
+        {
+            const ws = new WeakSet();
+            ws.add( {} );
+            const str = objectStringify( ws );
+
+            expect( str ).toBe( 'WeakSet(opaque)' );
+        });
+
+        test( 'should produce identical hashes for different WeakMaps', () =>
+        {
+            const wm1 = new WeakMap();
+            const wm2 = new WeakMap();
+            wm1.set( {}, 'a' );
+            wm2.set( {}, 'b' );
+
+            expect( objectHash( wm1 ) ).toBe( objectHash( wm2 ) );
+        });
+
+        test( 'should produce identical hashes for different WeakSets', () =>
+        {
+            const ws1 = new WeakSet();
+            const ws2 = new WeakSet();
+            ws1.add( {} );
+            ws2.add( {} );
+
+            expect( objectHash( ws1 ) ).toBe( objectHash( ws2 ) );
+        });
+    });
+
+    describe( 'objectHashBytes', () =>
+    {
+        test( 'should return a Uint8Array', () =>
+        {
+            const result = objectHashBytes( { a: 1, b: 2 } );
+
+            expect( result ).toBeInstanceOf( Uint8Array );
+            expect( result.length ).toBeGreaterThan( 0 );
+        });
+
+        test( 'should return same bytes for same input', () =>
+        {
+            const bytes1 = objectHashBytes( { x: 'hello' } );
+            const bytes2 = objectHashBytes( { x: 'hello' } );
+
+            expect( bytes1 ).toEqual( bytes2 );
+        });
+
+        test( 'should return different bytes for different input', () =>
+        {
+            const bytes1 = objectHashBytes( { a: 1 } );
+            const bytes2 = objectHashBytes( { b: 2 } );
+
+            expect( bytes1 ).not.toEqual( bytes2 );
+        });
+
+        test( 'should respect algorithm and bitLength options', () =>
+        {
+            const bytes64 = objectHashBytes( 'test', { algorithm: 'cyrb64', bitLength: 64 } );
+            const bytes128 = objectHashBytes( 'test', { algorithm: 'murmur3', bitLength: 128 } );
+
+            expect( bytes64.length ).toBe( 8 );
+            expect( bytes128.length ).toBe( 16 );
+        });
+    });
+
+    describe( 'StreamingHash API', () =>
+    {
+        test( 'should support chained update().digest()', () =>
+        {
+            const stream = new StreamingHash();
+            const result = stream.update( 'hello' ).update( 42 ).digest();
+
+            expect( typeof result ).toBe( 'string' );
+            expect( result.length ).toBeGreaterThan( 0 );
+        });
+
+        test( 'should support Hasher.prototype.createHash() to reuse configured options', () =>
+        {
+            const hasher = new Hasher( { algorithm: 'murmur3', encoding: 'hex', bitLength: 128 } );
+            const stream = hasher.createHash();
+            const result = stream.update( 'hello' ).update( 42 ).digest();
+
+            expect( typeof result ).toBe( 'string' );
+            // A 128-bit MurmurHash3 hex digest has 32 characters
+            expect( result.length ).toBe( 32 );
+        });
+
+        test( 'should support standalone new StreamingHash() construction', () =>
+        {
+            const stream = new StreamingHash( { algorithm: 'cyrb64' } );
+            const result = stream.update( 'hello' ).digest();
+
+            expect( typeof result ).toBe( 'string' );
+            expect( result.length ).toBeGreaterThan( 0 );
+        });
+
+        test( 'should support digestBytes()', () =>
+        {
+            const stream = new StreamingHash();
+            const bytes = stream.update( { x: 1 } ).digestBytes();
+
+            expect( bytes ).toBeInstanceOf( Uint8Array );
+            expect( bytes.length ).toBeGreaterThan( 0 );
+        });
+
+        test( 'should support reset() to clear state', () =>
+        {
+            const stream = new StreamingHash();
+            const hash1 = stream.update( 'a' ).digest();
+
+            stream.reset();
+            stream.update( 'a' );
+            const hash2 = stream.digest();
+
+            expect( hash1 ).toBe( hash2 );
+        });
+
+        test( 'should produce different digests for different update sequences', () =>
+        {
+            const s1 = new StreamingHash();
+            const s2 = new StreamingHash();
+
+            const result1 = s1.update( 'a' ).update( 'b' ).digest();
+            const result2 = s2.update( 'b' ).update( 'a' ).digest();
+
+            expect( result1 ).not.toBe( result2 );
+        });
+
+        test( 'should respect options passed to constructor', () =>
+        {
+            const s1 = new StreamingHash( { algorithm: 'murmur3' } );
+            const s2 = new StreamingHash( { algorithm: 'cyrb64' } );
+
+            const result1 = s1.update( 'test' ).digest();
+            const result2 = s2.update( 'test' ).digest();
+
+            expect( result1 ).not.toBe( result2 );
+        });
+    });
+
+    describe( 'Golden Stability Snapshots', () =>
+    {
+        test( 'should match precalculated hashes for all algorithms', () =>
+        {
+            const sym = Symbol( 'test-symbol' );
+            const symNoDesc = Symbol();
+            const symSame1 = Symbol( 'same' );
+            const symSame2 = Symbol( 'same' );
+
+            const objWithToJSON = {
+                a: 1,
+                toJSON: () => ( { custom: 'serialized' } )
+            };
+
+            class CustomClassWithToJSON
+            {
+                toJSON()
+                {
+                    return 'customString';
+                }
+            }
+
+            const cases = [
+                { name: 'undefined', val: undefined, expected: { cyrb64: "1vgkz5t0s0bvwg", murmur3: "1v3j3q00ldw810", sha256: "1t7ipo81me4cxf0k628zw00i7fcl0mzfhrf1ga8jnl1dx7ad116wvocs" } },
+                { name: 'null', val: null, expected: { cyrb64: "173lp0a0teocvu", murmur3: "0qwstkr0kprbas", sha256: "0w82hso1ct1tov1egi1v70tmenbe1knpmck1x6bvwb12uheaa1x8aiob" } },
+                { name: 'true', val: true, expected: { cyrb64: "02dqmoc11gxzhw", murmur3: "1fzvtbe13c45u8", sha256: "1efeal70u2m5j002rbx2c1p8bkkr1biex251455d2j1ig29pw0k38oiz" } },
+                { name: 'false', val: false, expected: { cyrb64: "1921dai0rmnlwq", murmur3: "0wbf7o6110od1u", sha256: "1y4j2w5143wqkq17x3qwv0ayldh21ox3exv1e01jpv0w7kco40msimy2" } },
+                { name: 'hello', val: 'hello', expected: { cyrb64: "0lmgqi316zrmjn", murmur3: "0l9eze91k5g9cr", sha256: "0p5ikry0flus8i0y44w4j0ubmmxx1f9kntk155k8q80m4yqyn0hjdapm" } },
+                { name: 'empty_string', val: '', expected: { cyrb64: "1c6ccqh13d2div", murmur3: "1v2flfk0foie5a", sha256: "056ldqj08j5rep1txp7ob054n1m60gdvdx10vvz7hr09vi2sg0h2f2na" } },
+                { name: 'number_42', val: 42, expected: { cyrb64: "19xu4oo0ufs8xb", murmur3: "085a4f10zardjm", sha256: "0vzhjn802v9itp1ascwy61m09pxa05zzkei1imbdq30tpq2jp07jz7m1" } },
+                { name: 'number_neg_pi', val: -3.14, expected: { cyrb64: "02nx0440iortjl", murmur3: "037jjje0gkym84", sha256: "0tnh1oh0yuf9q51eanbl51l2fi0x0fcstvb15xp5fs0qqqsho1dwasd5" } },
+                { name: 'number_nan', val: NaN, expected: { cyrb64: "10fs7xl1bocpqa", murmur3: "1ry1eb31nbr8il", sha256: "1naokao0q0j8sw0dyrfvf0b330d71sr26fz0w597lc0bxqi3k1idjf32" } },
+                { name: 'number_inf', val: Infinity, expected: { cyrb64: "1tm2jz21hh9vrl", murmur3: "05pu92w1fngd7i", sha256: "1lpwnn116u5ri90fcvkqj10n5bre0w03kst196xnd002xge3h1eohk40" } },
+                { name: 'number_neg_inf', val: -Infinity, expected: { cyrb64: "11quh3l0meussy", murmur3: "1rg66rj1voh0s5", sha256: "1j0szkh1ge5xeo1utdvq503d81is0o5loer1y13rmx1abr8ki1cjsugp" } },
+                { name: 'bigint', val: 12345678901234567890n, expected: { cyrb64: "17m3f3u16dpbcs", murmur3: "1ticdjr09vs3q1", sha256: "1bsatrz1y2ogoi0lhglnv0fxnza40er1y8m1a4ylda0ymv1y9095kmpg" } },
+                { name: 'symbol_desc', val: sym, expected: { cyrb64: "0x74yb21x9o2fm", murmur3: "0ir3wpr0nnnrhv", sha256: "14eqxc51cpi4w107uo68i1srd1jz1horjcp1ks7o0a1xscv831pvmweg" } },
+                { name: 'symbol_nodesc', val: symNoDesc, expected: { cyrb64: "0knoslw1icfbxc", murmur3: "0kssa961mi377q", sha256: "16pjn3f1x6t7zv05s8wdb06t4jw00emrfr11v3ykto0ljbc501d8xxfd" } },
+                { name: 'plain_object', val: { a: 1, b: 2 }, expected: { cyrb64: "0807dix0nd8pir", murmur3: "1xicw9w1nb8vqh", sha256: "0impji70xd51c30ue5ybn0hmehnj1iycbp30fksgno12i7v0811s2l4n" } },
+                { name: 'plain_object_alt_order', val: { b: 2, a: 1 }, expected: { cyrb64: "0807dix0nd8pir", murmur3: "1xicw9w1nb8vqh", sha256: "0impji70xd51c30ue5ybn0hmehnj1iycbp30fksgno12i7v0811s2l4n" } },
+                { name: 'nested_object', val: { x: { y: { z: 3 } } }, expected: { cyrb64: "0vbcxod067sg8o", murmur3: "16zy3h30w39vrs", sha256: "1n5qamz0gjjnwj1n73j2o1og2qk01r7kj6o1k4obq210m2u8a162lzuo" } },
+                { name: 'array', val: [3, 2, 1], expected: { cyrb64: "1ngawjh1lcs9am", murmur3: "1rx8ove05ko5yl", sha256: "0dja0in175ejf21u4p6471vm665q0su23zr08394gr10dr37l0m4d759" } },
+                { name: 'set', val: new Set([2, 1]), expected: { cyrb64: "19a2ne31e7rfvx", murmur3: "14ez9wd17368tw", sha256: "1mo6r7p0w8haz71d6try90tlut4x0ldsc5v103i36p1p6m1np0nrb0gn" } },
+                { name: 'map', val: new Map([['b', 2], ['a', 1]]), expected: { cyrb64: "085w1ts08qph9y", murmur3: "1btive01qe3w75", sha256: "0m37czj1mttumu0l972o11jny60j0clg0xr0vgij8f11w6g521gxr8eg" } },
+                { name: 'boxed_string', val: new String("boxed"), expected: { cyrb64: "11pj9yr12dogiw", murmur3: "1wxr1xf07mwow8", sha256: "0m10n690scutva1tn9nxk15xlrva015732r0b2vwnz1vt73zl0fddftn" } },
+                { name: 'boxed_number', val: new Number(123), expected: { cyrb64: "1gnpfzd0a466hr", murmur3: "1g3shfm0b1853x", sha256: "1a63dcp08y7z4t0i66zqf1ujwf5k18h35fj1yscvwe16lu2uv1wpjxsz" } },
+                { name: 'boxed_boolean', val: new Boolean(true), expected: { cyrb64: "02dqmoc11gxzhw", murmur3: "1fzvtbe13c45u8", sha256: "1efeal70u2m5j002rbx2c1p8bkkr1biex251455d2j1ig29pw0k38oiz" } },
+                { name: 'boxed_symbol', val: Object(Symbol("boxed-symbol")), expected: { cyrb64: "06rch0g1ij1a7k", murmur3: "0ddsfzj0yx0mrm", sha256: "0ted84n1d1xc9m00qxn20045sx5b0csvaxx0zt42680jk6nyg1lnhy5u" } },
+                { name: 'date', val: new Date("2026-07-20T07:20:00.000Z"), expected: { cyrb64: "0hp1u7s10i6a41", murmur3: "1d1pnkd0kueowz", sha256: "0o8zn8m1b6hb5a19m4xlb074nvlz0hqp0980kik5en182obkh018yr22" } },
+                { name: 'regexp', val: /abc/gi, expected: { cyrb64: "05gtibu0nn8vlh", murmur3: "1awf9dk1fm1fqp", sha256: "04fybqt1o6h8ze07p0fdu0yxslsy1yrtxkr0b3qxqh06854rp1o8v5ee" } },
+                { name: 'error', val: new Error("error message"), expected: { cyrb64: "1lci1tq026dh6q", murmur3: "0j6tdy30iku9sf", sha256: "0i4g03m1gbr9e80j45mwg18h3o6w0gbno7f0n2voh60x7zvkx06h97ep" } },
+                { name: 'url', val: new URL("https://example.com/foo"), expected: { cyrb64: "0mgl7mt0qkcdaq", murmur3: "04yruty0fc7wwd", sha256: "07qio3h03f3du81ekp3qw1t2go5e10n83960wqq43j1mi160r1d8bbcw" } },
+                { name: 'url_search_params', val: new URLSearchParams("x=1&y=2"), expected: { cyrb64: "1ep8h9q0fen8j7", murmur3: "193ipwp1p1bcjr", sha256: "11iqdif0v3r7li0nl3jby1tfypg90st11su1czoos20ackwgo1tvgms3" } },
+                { name: 'to_json_object', val: objWithToJSON, expected: { cyrb64: "1s5l3750vqmfvd", murmur3: "0l1yxag0267ykv", sha256: "04a4b9v1a9cf8h0ylmb840me0eit102w1mf00jtqz90z7dby60byaqlt" } },
+                { name: 'to_json_class', val: new CustomClassWithToJSON(), expected: { cyrb64: "0nff2yo07xxjcc", murmur3: "1bek8131a3op2o", sha256: "14kw3n01nj8uzi087mi9y1y1lx631wmfs9513hgra715dqq650nwzw26" } },
+                { name: 'uint8array', val: new Uint8Array([1, 2, 3]), expected: { cyrb64: "196yq0x16chz2d", murmur3: "04gsodb14eekt2", sha256: "1rohx7910zm35y1klte7s16ggn0l0830uvh1ega6wt0ljts3a18oe338" } },
+                { name: 'duplicate_symbols', val: { [symSame2]: 'v2', [symSame1]: 'v1' }, expected: { cyrb64: "1ga2ckb0asa324", murmur3: "0bd13591np8o73", sha256: "1q48ef000mxopz1hv9ix50jjm1oc1qvf04j0saib3e1s5w4mf08or37k" } },
+                { name: 'nested_array_of_objects', val: [ { a: 1, b: [ 2, 3 ] }, { c: { d: 4 } } ], expected: { cyrb64: "1h8sk5h0yvwomq", murmur3: "16fy6b60uj3ckd", sha256: "0ncebj90cwa2t20ndzptk0iihs9r0ww7jfl1gdhuyi1j9z7w2194vaa1" } },
+                { name: 'deep_mixed_structure', val: { a: [ { x: 1 } ], b: new Map([ [ 'key', { nested: [ 1, 2 ] } ] ]) }, expected: { cyrb64: "0uaetg904lm5db", murmur3: "1ud28yf1c8d48i", sha256: "0ijbenb06qi5fp1noc5541tu1ma8161wen41bnpyfv0gdbunu1py4i5t" } },
+                { name: 'complex_nested_json', val: { user: { id: 123, profile: { name: 'John', tags: ['admin', 'user'] } }, meta: { status: 'active' } }, expected: { cyrb64: "0jlaigp07q1oqd", murmur3: "1titmlj1yazro6", sha256: "0j9iq3x1r9y48z0yyzclf1bgqbvq1cwwel60y4fu5o0u5nf9z1rigban" } },
+                { name: 'array_of_mixed_types', val: [ 1, 'text', { obj: true }, [ 1, 2 ], new Set([3, 4]) ], expected: { cyrb64: "1yssme10xnidu1", murmur3: "13v6y640ue6hh5", sha256: "0t02bvu1cqq0uy1yismyv1bsp21k1om4ux504i829u0ylx80s0bb1pwk" } }
+            ];
+
+            for( const c of cases )
+            {
+                expect( objectHash( c.val, { algorithm: 'cyrb64' } ) ).toBe( c.expected.cyrb64 );
+                expect( objectHash( c.val, { algorithm: 'murmur3' } ) ).toBe( c.expected.murmur3 );
+                expect( objectHash( c.val, { algorithm: 'sha256' } ) ).toBe( c.expected.sha256 );
+            }
+        });
+    });
     });
 });
