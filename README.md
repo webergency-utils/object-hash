@@ -1,12 +1,12 @@
 # @webergency-utils/object-hash
 
+A fast, deterministic object hashing and stringification library supporting cyrb64, MurmurHash3, and SHA-256 algorithms. It provides full support for modern JavaScript types, stable symbol sorting, and custom serialization options.
+
 [![npm version](https://img.shields.io/npm/v/@webergency-utils/object-hash.svg)](https://www.npmjs.com/package/@webergency-utils/object-hash)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/webergency-utils/object-hash/badge)](https://securityscorecards.dev/viewer/?uri=github.com/webergency-utils/object-hash)
 [![Maintenance](https://img.shields.io/badge/maintenance-active-brightgreen.svg)](#maintenance)
 [![npm downloads](https://img.shields.io/npm/dm/@webergency-utils/object-hash.svg)](https://www.npmjs.com/package/@webergency-utils/object-hash)
 [![License](https://img.shields.io/npm/l/@webergency-utils/object-hash.svg)](https://github.com/webergency-utils/object-hash)
-
-A fast, deterministic object hashing and stringification library supporting cyrb64, MurmurHash3, and SHA-256 algorithms. It provides full support for modern JavaScript types, stable symbol sorting, and custom serialization options.
 
 ## TL;DR
 
