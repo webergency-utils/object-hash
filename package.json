@@ -7,7 +7,7 @@
   "license": "MIT",
   "main": "dist/hash.cjs",
   "module": "dist/hash.js",
-  "types": "dist/hash.d.ts", 
+  "types": "dist/hash.d.ts",
   "exports": {
     ".": {
       "import": {
