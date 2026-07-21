@@ -1,10 +1,13 @@
 {
   "name": "@webergency-utils/object-hash",
-  "version": "1.0.2",
+  "version": "1.0.1",
   "type": "module",
   "description": "A fast, deterministic object hashing and stringification library supporting cyrb64, MurmurHash3, and SHA-256 algorithms.",
   "author": "radixxko",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "main": "dist/hash.cjs",
   "module": "dist/hash.js",
   "types": "dist/hash.d.ts",
