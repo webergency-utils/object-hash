@@ -1,5 +1,5 @@
 const { FuzzedDataProvider } = require('@jazzer.js/core');
-const objectHash = require('../dist/hash.cjs');
+const objectHash = require('./dist/hash.cjs');
 
 /**
  * Recursively construct a rich, semi-random JavaScript data structure

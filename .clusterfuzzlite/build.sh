@@ -1,9 +1,13 @@
 #!/bin/bash -eu
 
-# Install dependencies and build library
-npm ci
+# Install dependencies
+npm install
+
+# Install Jazzer.js inside the container (ensures correct native binaries for container's GLIBC)
+npm install --save-dev @jazzer.js/core
+
+# Build the library
 npm run build
 
-# Compile Jazzer.js fuzz target into $OUT directory
-# Args: <project_name> <fuzz_target_path_relative_to_project_root>
-compile_javascript_fuzzer object-hash .clusterfuzzlite/fuzz_hash.cjs
+# Compile fuzz target
+compile_javascript_fuzzer object-hash fuzz_hash.cjs

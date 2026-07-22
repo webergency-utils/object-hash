@@ -28,7 +28,7 @@
   ],
   "scripts": {
     "test": "vitest run",
-    "fuzz": "jazzer .clusterfuzzlite/fuzz_hash.cjs",
+    "fuzz": "jazzer fuzz_hash.cjs",
     "coverage": "vitest run --coverage",
     "clean": "rm -rf ./dist/* node_modules package-lock.json && npm i",
     "build": "npm run clean && tsup",
