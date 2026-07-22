@@ -6,7 +6,8 @@ npm install --no-save @jazzer.js/core
 npm run build
 
 # Compile Jazzer.js fuzz target into $OUT directory
-compile_javascript_fuzzer .clusterfuzzlite/fuzz_hash.cjs
+compile_javascript_fuzzer fuzz_hash .clusterfuzzlite/fuzz_hash.cjs
+
 
 
 
