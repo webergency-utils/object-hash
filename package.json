@@ -28,6 +28,7 @@
   ],
   "scripts": {
     "test": "vitest run",
+    "fuzz": "jazzer .clusterfuzzlite/fuzz_hash.cjs",
     "coverage": "vitest run --coverage",
     "clean": "rm -rf ./dist/* node_modules package-lock.json && npm i",
     "build": "npm run clean && tsup",
@@ -39,6 +40,7 @@
     "url": "git+https://github.com/webergency-utils/object-hash.git"
   },
   "devDependencies": {
+    "@jazzer.js/core": "^4.0.0",
     "@types/node": "^26.0.0",
     "@vitest/coverage-v8": "^4.1.9",
     "tsup": "^8.5.1",
