@@ -1,15 +1,9 @@
 #!/bin/bash -eu
 
-# Install dependencies, Jazzer.js core fuzzer engine, and build library
+# Install dependencies and build library
 npm ci
-npm install --no-save @jazzer.js/core
 npm run build
 
-# Copy fuzz target into $SRC and compile with Jazzer.js
-cp .clusterfuzzlite/fuzz_hash.cjs $SRC/fuzz_hash.cjs
-compile_javascript_fuzzer $SRC/fuzz_hash.cjs
-
-
-
-
-
+# Compile Jazzer.js fuzz target into $OUT directory
+# Args: <project_name> <fuzz_target_path_relative_to_project_root>
+compile_javascript_fuzzer object-hash .clusterfuzzlite/fuzz_hash.cjs
