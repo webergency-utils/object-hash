@@ -1,6 +1,6 @@
 {
   "name": "@webergency-utils/object-hash",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "type": "module",
   "description": "A fast, deterministic object hashing and stringification library supporting cyrb64, MurmurHash3, and SHA-256 algorithms.",
   "author": "radixxko",
@@ -28,6 +28,7 @@
   ],
   "scripts": {
     "test": "vitest run",
+    "fuzz": "jazzer fuzz_hash.cjs",
     "coverage": "vitest run --coverage",
     "clean": "rm -rf ./dist/* node_modules package-lock.json && npm i",
     "build": "npm run clean && tsup",
@@ -39,6 +40,7 @@
     "url": "git+https://github.com/webergency-utils/object-hash.git"
   },
   "devDependencies": {
+    "@jazzer.js/core": "^4.0.0",
     "@types/node": "^26.0.0",
     "@vitest/coverage-v8": "^4.1.9",
     "tsup": "^8.5.1",
