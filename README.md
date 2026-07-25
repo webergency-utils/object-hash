@@ -3,10 +3,19 @@
 A fast, deterministic object hashing and stringification library supporting cyrb64, MurmurHash3, and SHA-256 algorithms. It provides full support for modern JavaScript types, stable symbol sorting, and custom serialization options.
 
 [![npm version](https://img.shields.io/npm/v/@webergency-utils/object-hash.svg)](https://www.npmjs.com/package/@webergency-utils/object-hash)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/webergency-utils/object-hash/badge)](https://securityscorecards.dev/viewer/?uri=github.com/webergency-utils/object-hash)
-[![Maintenance](https://img.shields.io/badge/maintenance-active-brightgreen.svg)](#maintenance)
-[![npm downloads](https://img.shields.io/npm/dm/@webergency-utils/object-hash.svg)](https://www.npmjs.com/package/@webergency-utils/object-hash)
 [![License](https://img.shields.io/npm/l/@webergency-utils/object-hash.svg)](https://github.com/webergency-utils/object-hash)
+[![Maintenance](https://img.shields.io/badge/maintenance-active-brightgreen.svg)](#maintenance)
+[![dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](https://www.npmjs.com/package/@webergency-utils/object-hash?activeTab=dependencies)
+[![npm downloads](https://img.shields.io/npm/dm/@webergency-utils/object-hash.svg)](https://www.npmjs.com/package/@webergency-utils/object-hash)
+<br>
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/webergency-utils/object-hash/badge)](https://securityscorecards.dev/viewer/?uri=github.com/webergency-utils/object-hash)
+[![codecov](https://codecov.io/gh/webergency-utils/object-hash/graph/badge.svg)](https://codecov.io/gh/webergency-utils/object-hash)
+[![Tests](https://github.com/webergency-utils/object-hash/actions/workflows/ci.yml/badge.svg)](https://github.com/webergency-utils/object-hash/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/webergency-utils/object-hash/actions/workflows/codeql.yml/badge.svg)](https://github.com/webergency-utils/object-hash/actions/workflows/codeql.yml)
+
+
+
+
 
 ## TL;DR
 
