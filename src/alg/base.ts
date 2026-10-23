@@ -4,7 +4,7 @@ export function bytesToHex( bytes: Uint8Array ): string
 {
     if( typeof Buffer === 'function' )
     {
-        return Buffer.from( bytes ).toString( 'hex' );
+        return Buffer.from( bytes.buffer, bytes.byteOffset, bytes.byteLength ).toString( 'hex' );
     }
 
     let hex = '';
@@ -102,7 +102,7 @@ export function bytesToBase64( bytes: Uint8Array ): string
 {
     if( typeof Buffer === 'function' )
     {
-        return Buffer.from( bytes ).toString( 'base64' );
+        return Buffer.from( bytes.buffer, bytes.byteOffset, bytes.byteLength ).toString( 'base64' );
     }
 
     let result = '';
@@ -151,7 +151,7 @@ export function bytesToBase64Url( bytes: Uint8Array ): string
 {
     if( typeof Buffer === 'function' )
     {
-        return Buffer.from( bytes ).toString( 'base64url' );
+        return Buffer.from( bytes.buffer, bytes.byteOffset, bytes.byteLength ).toString( 'base64url' );
     }
 
     const b64 = bytesToBase64( bytes );
@@ -178,6 +178,15 @@ export function validateEncoding( encoding: any ): asserts encoding is Encoding
     {
         throw new Error( `Invalid encoding: ${ encoding }. Expected one of hex, base36, base62, base64, base64url.` );
     }
+}
+
+export function mixPassSeed( base: number, mult: number, passIndex: number ): number
+{
+    let v = ( base ^ Math.imul( passIndex + 1, mult )) | 0;
+    v = Math.imul( v ^ ( v >>> 16 ), 0x85ebca6b );
+    v = Math.imul( v ^ ( v >>> 13 ), 0xc2b2ae35 );
+
+    return ( v ^ ( v >>> 16 )) >>> 0;
 }
 
 export function encodeBytes( bytes: Uint8Array, encoding: Encoding = 'base36' ): string

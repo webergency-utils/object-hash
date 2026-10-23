@@ -73,14 +73,14 @@ function createFuzzedObject(provider, depth = 0, maxDepth = 4) {
             return new Date(NaN);
         case 15:
             return provider.pickValue([
-                new Number(provider.consumeNumber()),
-                new Number(NaN),
-                new Number(Infinity),
-                new String(provider.consumeString(8)),
-                new Boolean(provider.consumeBoolean()),
-                Object(Symbol(provider.consumeString(5))),
-                Object(42n)
-            ]);
+                () => new Number(provider.consumeNumber()),
+                () => new Number(NaN),
+                () => new Number(Infinity),
+                () => new String(provider.consumeString(8)),
+                () => new Boolean(provider.consumeBoolean()),
+                () => Object(Symbol(provider.consumeString(5))),
+                () => Object(42n)
+            ])();
         case 16:
         default: {
             const obj = {};

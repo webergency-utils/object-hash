@@ -109,15 +109,6 @@ class HasherAdapter implements Accumulator
     }
 }
 
-function defaultBitLengthForAlgorithm( alg: 'cyrb64' | 'murmur3' | 'sha256' ): BitLength
-{
-    if( alg === 'cyrb64' ){ return 64 }
-
-    if( alg === 'murmur3' ){ return 128 }
-
-    return 256;
-}
-
 function createSha256Hasher( bitLength: BitLength ): HasherAdapter
 {
     const nodeCrypto = getNodeCrypto();
@@ -208,11 +199,6 @@ function createConfiguredHasher( options: Partial<ObjectStringifyOptions> ): { h
 
     validateEncoding( encoding );
 
-    if( bitLength !== undefined )
-    {
-        validateBitLength( bitLength );
-    }
-
     if( hasher !== undefined )
     {
         return {
@@ -221,11 +207,8 @@ function createConfiguredHasher( options: Partial<ObjectStringifyOptions> ): { h
         };
     }
 
-    const resolvedAlg = resolveAlgorithm( algorithm );
-    const resolvedBits = bitLength ?? defaultBitLengthForAlgorithm( resolvedAlg );
-
     return {
-        hasher: createHasher( resolvedAlg, resolvedBits ),
+        hasher: createHasher( resolveAlgorithm( algorithm ), bitLength ),
         encoding
     };
 }
@@ -246,7 +229,7 @@ const randomID = (): string =>
         const arr = new Uint8Array( 16 );
         crypto.getRandomValues( arr );
 
-        return Array.from( arr, byte => byte.toString( 16 ).padStart( 2, '0' ) ).join( '' );
+        return bytesToHex( arr );
     }
 
     const nodeCrypto = getNodeCrypto();
@@ -674,29 +657,32 @@ function _objectStringify( obj: any, visited: Set<any>, options: NormalizedStrin
                 descCounts.set( desc, ( descCounts.get( desc ) ?? 0 ) + 1 );
             }
 
-            dupSymValues = new Map<symbol, string>();
-            const sameRefValues = new Map<any, string>();
-
-            for( let i = 0; i < symKeys.length; ++i )
+            if( descCounts.size < symKeys.length )
             {
-                const sym = symKeys[i];
-                const desc = sym.description ?? '';
+                dupSymValues = new Map<symbol, string>();
+                const sameRefValues = new Map<any, string>();
 
-                if(( descCounts.get( desc ) ?? 0 ) > 1 )
+                for( let i = 0; i < symKeys.length; ++i )
                 {
-                    const symVal = obj[sym];
+                    const sym = symKeys[i];
+                    const desc = sym.description ?? '';
 
-                    if( sameRefValues.has( symVal ))
+                    if(( descCounts.get( desc ) ?? 0 ) > 1 )
                     {
-                        dupSymValues.set( sym, sameRefValues.get( symVal )! );
-                    }
-                    else
-                    {
-                        const valAcc = new StringAccumulator();
-                        _objectStringify( symVal, visited, options, valAcc );
-                        const serializedVal = valAcc.toString();
-                        sameRefValues.set( symVal, serializedVal );
-                        dupSymValues.set( sym, serializedVal );
+                        const symVal = obj[sym];
+
+                        if( sameRefValues.has( symVal ))
+                        {
+                            dupSymValues.set( sym, sameRefValues.get( symVal )! );
+                        }
+                        else
+                        {
+                            const valAcc = new StringAccumulator();
+                            _objectStringify( symVal, visited, options, valAcc );
+                            const serializedVal = valAcc.toString();
+                            sameRefValues.set( symVal, serializedVal );
+                            dupSymValues.set( sym, serializedVal );
+                        }
                     }
                 }
             }
@@ -846,23 +832,23 @@ export class Hasher
 export class StreamingHash
 {
     #options: Partial<ObjectStringifyOptions>;
-    #hasher: HasherAdapter;
-    #encoding: Encoding;
+    #stringifyOptions: NormalizedStringifyOptions;
+    #hasher!: HasherAdapter;
+    #encoding!: Encoding;
 
     constructor( options: Partial<ObjectStringifyOptions> = {} )
     {
         this.#options = options;
+        this.#stringifyOptions = normalizeStringifyOptions( options );
 
-        const configured = createConfiguredHasher( this.#options );
-        this.#hasher = configured.hasher;
-        this.#encoding = configured.encoding;
+        this.reset();
     }
 
     update( obj: any ): this
     {
         const chunkAccumulator = new StringAccumulator();
 
-        _objectStringify( obj, new Set(), normalizeStringifyOptions( this.#options ), chunkAccumulator );
+        _objectStringify( obj, new Set(), this.#stringifyOptions, chunkAccumulator );
 
         const chunk = chunkAccumulator.toString();
 

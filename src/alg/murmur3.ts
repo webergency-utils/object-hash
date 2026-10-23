@@ -1,4 +1,4 @@
-import { validateBitLength } from './base';
+import { type BitLength, mixPassSeed, validateBitLength } from './base';
 
 const ENCODER = new TextEncoder();
 
@@ -8,9 +8,9 @@ export default class MurmurHash3
     #buffer = new Uint8Array( 16 );
     #bufLen = 0;
     #totalLen = 0;
-    #bitLength: 64 | 96 | 128 | 192 | 256;
+    #bitLength: BitLength;
 
-    constructor( bitLength: 64 | 96 | 128 | 192 | 256 = 128 )
+    constructor( bitLength: BitLength = 128 )
     {
         validateBitLength( bitLength );
 
@@ -21,20 +21,11 @@ export default class MurmurHash3
 
         for( let i = 0; i < passes; ++i )
         {
-            const mix = ( base: number, mult: number ): number =>
-            {
-                let v = ( base ^ Math.imul( i + 1, mult )) | 0;
-                v = Math.imul( v ^ ( v >>> 16 ), 0x85ebca6b );
-                v = Math.imul( v ^ ( v >>> 13 ), 0xc2b2ae35 );
-
-                return ( v ^ ( v >>> 16 )) >>> 0;
-            };
-
             this.#states.push({
-                h1: mix( 0xdeadbeef, 0x9e3779b9 ),
-                h2: mix( 0x41c6ce57, 0x85ebca6b ),
-                h3: mix( 0x1b873593, 0xc2b2ae35 ),
-                h4: mix( 0xcc9e2d51, 0x27d4eb2f )
+                h1: mixPassSeed( 0xdeadbeef, 0x9e3779b9, i ),
+                h2: mixPassSeed( 0x41c6ce57, 0x85ebca6b, i ),
+                h3: mixPassSeed( 0x1b873593, 0xc2b2ae35, i ),
+                h4: mixPassSeed( 0xcc9e2d51, 0x27d4eb2f, i )
             });
         }
     }

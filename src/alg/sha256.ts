@@ -1,4 +1,4 @@
-import { validateBitLength } from './base';
+import { type BitLength, validateBitLength } from './base';
 
 const ENCODER = new TextEncoder();
 
@@ -27,9 +27,9 @@ export default class Sha256Hash
     #w = new Uint32Array( 64 );
     #bufLen = 0;
     #totalLen = 0;
-    #bitLength: 64 | 96 | 128 | 192 | 256;
+    #bitLength: BitLength;
 
-    constructor( bitLength: 64 | 96 | 128 | 192 | 256 = 256 )
+    constructor( bitLength: BitLength = 256 )
     {
         validateBitLength( bitLength );
 
@@ -180,16 +180,16 @@ export default class Sha256Hash
 
         this.#compress( state, padBlock, 0 );
 
-        const fullBytes = new Uint8Array( 32 );
-        const outView = new DataView( fullBytes.buffer );
+        const byteLength = this.#bitLength / 8;
+        const outBytes = new Uint8Array( byteLength );
+        const outView = new DataView( outBytes.buffer );
+        const words = byteLength >>> 2;
 
-        for( let i = 0; i < 8; ++i )
+        for( let i = 0; i < words; ++i )
         {
             outView.setUint32( i * 4, state[i], false );
         }
 
-        const byteLength = this.#bitLength / 8;
-
-        return byteLength === 32 ? fullBytes : fullBytes.slice( 0, byteLength );
+        return outBytes;
     }
 }

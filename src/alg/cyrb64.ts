@@ -1,11 +1,11 @@
-import { validateBitLength } from './base';
+import { type BitLength, mixPassSeed, validateBitLength } from './base';
 
 export default class Cyrb64Hash
 {
     #states: { h1: number, h2: number }[];
-    #bitLength: 64 | 96 | 128 | 192 | 256;
+    #bitLength: BitLength;
 
-    constructor( bitLength: 64 | 96 | 128 | 192 | 256 = 64 )
+    constructor( bitLength: BitLength = 64 )
     {
         validateBitLength( bitLength );
 
@@ -16,20 +16,9 @@ export default class Cyrb64Hash
 
         for( let i = 0; i < passes; ++i )
         {
-            let s1 = ( 0xdeadbeef ^ Math.imul( i + 1, 0x9e3779b9 )) | 0;
-            let s2 = ( 0x41c6ce57 ^ Math.imul( i + 1, 0x85ebca6b )) | 0;
-
-            s1 = Math.imul( s1 ^ ( s1 >>> 16 ), 0x85ebca6b );
-            s1 = Math.imul( s1 ^ ( s1 >>> 13 ), 0xc2b2ae35 );
-            s1 = ( s1 ^ ( s1 >>> 16 )) >>> 0;
-
-            s2 = Math.imul( s2 ^ ( s2 >>> 16 ), 0x85ebca6b );
-            s2 = Math.imul( s2 ^ ( s2 >>> 13 ), 0xc2b2ae35 );
-            s2 = ( s2 ^ ( s2 >>> 16 )) >>> 0;
-
             this.#states.push({
-                h1: s1,
-                h2: s2
+                h1: mixPassSeed( 0xdeadbeef, 0x9e3779b9, i ),
+                h2: mixPassSeed( 0x41c6ce57, 0x85ebca6b, i )
             });
         }
     }
