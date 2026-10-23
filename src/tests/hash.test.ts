@@ -612,6 +612,124 @@ describe( 'object-hash tests', () =>
         expect( hSet1 ).toBe( hSet2 );
     });
 
+    test( 'should support isomorphic sha256 fallback, algorithm-native bitLength defaults, uniform truncation, and custom hasher normalization (U2)', () =>
+    {
+        // Arrange
+        const payload = { a: 1, b: [ 'hello', 'world' ] };
+
+        // Act & Assert: Default bitLength per algorithm (8 bytes cyrb64/fast, 16 bytes murmur3/balanced, 32 bytes sha256/strong)
+        expect( objectHashBytes( payload, { algorithm: 'cyrb64' } ).length ).toBe( 8 );
+        expect( objectHashBytes( payload, { algorithm: 'fast' } ).length ).toBe( 8 );
+        expect( objectHashBytes( payload, { algorithm: 'murmur3' } ).length ).toBe( 16 );
+        expect( objectHashBytes( payload, { algorithm: 'balanced' } ).length ).toBe( 16 );
+        expect( objectHashBytes( payload, { algorithm: 'sha256' } ).length ).toBe( 32 );
+        expect( objectHashBytes( payload, { algorithm: 'strong' } ).length ).toBe( 32 );
+
+        // Explicit bitLength overrides across sha256
+        for( const bits of [ 64, 96, 128, 192, 256 ] as const )
+        {
+            expect( objectHashBytes( payload, { algorithm: 'sha256', bitLength: bits } ).length ).toBe( bits / 8 );
+        }
+
+        // Browser fallback equivalence when process.getBuiltinModule returns undefined
+        const nodeShaHex = objectHash( payload, { algorithm: 'sha256', encoding: 'hex' });
+        const nodeSha128 = objectHashBytes( payload, { algorithm: 'sha256', bitLength: 128 });
+        const origGetBuiltin = ( globalThis as any ).process?.getBuiltinModule;
+
+        try
+        {
+            if( ( globalThis as any ).process )
+            {
+                ( globalThis as any ).process.getBuiltinModule = () => undefined;
+            }
+
+            const fallbackShaHex = objectHash( payload, { algorithm: 'sha256', encoding: 'hex' });
+            const fallbackStrongHex = objectHash( payload, { algorithm: 'strong', encoding: 'hex' });
+            const fallbackSha128 = objectHashBytes( payload, { algorithm: 'sha256', bitLength: 128 });
+
+            expect( fallbackShaHex ).toBe( nodeShaHex );
+            expect( fallbackStrongHex ).toBe( nodeShaHex );
+            expect( fallbackSha128 ).toStrictEqual( nodeSha128 );
+        }
+        finally
+        {
+            if( ( globalThis as any ).process )
+            {
+                ( globalThis as any ).process.getBuiltinModule = origGetBuiltin;
+            }
+        }
+
+        // Invalid bitLength and encoding validation in objectHash / objectHashBytes / StreamingHash
+        expect( () => objectHash( payload, { bitLength: 48 as any } )).toThrow( /Invalid bitLength/i );
+        expect( () => objectHash( payload, { encoding: 'utf8' as any } )).toThrow( /Invalid encoding/i );
+        expect( () => objectHashBytes( payload, { bitLength: 100 as any } )).toThrow( /Invalid bitLength/i );
+        expect( () => new StreamingHash({ bitLength: 16 as any })).toThrow( /Invalid bitLength/i );
+        expect( () => new StreamingHash({ encoding: 'invalid' as any })).toThrow( /Invalid encoding/i );
+
+        // Custom hasher returning string in objectHashBytes -> Uint8Array
+        const strHasher = {
+            update() {},
+            digest()
+            {
+                return 'custom_str_digest';
+            }
+        };
+        const rawFromStr = objectHashBytes( payload, { hasher: strHasher });
+        expect( rawFromStr ).toBeInstanceOf( Uint8Array );
+        expect( rawFromStr.constructor ).toBe( Uint8Array );
+
+        // Custom hasher class with leading comment before class keyword
+        const CommentedHasher = ( 0, eval )( '(/* leading comment */ class CommentedHasher { update() {} digest() { return new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]); } })' );
+        expect( () => objectHash( payload, { hasher: CommentedHasher } )).not.toThrow();
+        expect( objectHashBytes( payload, { hasher: CommentedHasher } )).toStrictEqual( new Uint8Array([ 1, 2, 3, 4, 5, 6, 7, 8 ]) );
+
+        // Also test string hasher aliases ('cyrb64', 'murmur3', 'sha256', 'fast', 'balanced', 'strong') and factory returning undefined fallback
+        expect( objectHash( payload, { hasher: 'cyrb64' } )).toBe( objectHash( payload, { algorithm: 'cyrb64' } ));
+        expect( objectHash( payload, { hasher: 'murmur3' } )).toBe( objectHash( payload, { algorithm: 'murmur3' } ));
+        expect( objectHash( payload, { hasher: 'md5' as any } ).length ).toBeGreaterThan( 0 );
+
+        // Native Node ESM child-process smoke test on built dist/hash.js (AE6)
+        const { execFileSync } = require( 'child_process' );
+        const esmOutput = execFileSync(
+            process.execPath,
+            [
+                '--input-type=module',
+                '-e',
+                'import objectHash, { objectHashBytes, Sha256Hash } from "./dist/hash.js"; const h = objectHash({ a: 1 }, { algorithm: "sha256" }); const b = objectHashBytes({ a: 1 }, { algorithm: "sha256", bitLength: 128 }); const s = new Sha256Hash(128); s.update("abc"); console.log(JSON.stringify({ hLen: h.length, bLen: b.byteLength, isUint8: b instanceof Uint8Array, sLen: s.digest().byteLength }));'
+            ],
+            { encoding: 'utf8' }
+        );
+        const parsedEsm = JSON.parse( esmOutput.trim() );
+        expect( parsedEsm.hLen ).toBeGreaterThan( 20 );
+        expect( parsedEsm.bLen ).toBe( 16 );
+        expect( parsedEsm.isUint8 ).toBe( true );
+        expect( parsedEsm.sLen ).toBe( 16 );
+    });
+
+    test( 'StreamingHash should frame chunks to prevent boundary collisions and allow repeated non-destructive digests across all algorithms (U2 / AE3)', () =>
+    {
+        for( const algorithm of [ 'cyrb64', 'murmur3', 'sha256' ] as const )
+        {
+            const s1 = new StreamingHash({ algorithm });
+            const s2 = new StreamingHash({ algorithm });
+
+            const h1 = s1.update( 12 ).update( 3 ).digest();
+            const h2 = s2.update( 1 ).update( 23 ).digest();
+
+            expect( h1 ).not.toBe( h2 );
+
+            // Repeated digest() and digestBytes() must be non-destructive
+            const h1Repeat = s1.digest();
+            const b1 = s1.digestBytes();
+            expect( h1Repeat ).toBe( h1 );
+            expect( b1 ).toBeInstanceOf( Uint8Array );
+
+            // reset() must clear state cleanly
+            s1.reset();
+            expect( s1.update( 1 ).update( 23 ).digest() ).toBe( h2 );
+        }
+    });
+
     test( 'should throw an error for unsupported algorithm', () =>
     {
         expect( () => objectHash( {}, { algorithm: 'invalid' as any } )).toThrow( 'Unsupported hashing algorithm: invalid' );
@@ -1368,43 +1486,43 @@ describe( 'object-hash tests', () =>
             }
 
             const cases = [
-                { name: 'undefined', val: undefined, expected: { cyrb64: "1bp0z6i0ccfje0", murmur3: "0kshffl0knhv39", sha256: "1t7ipo81me4cxf0k628zw00i7fcl0mzfhrf1ga8jnl1dx7ad116wvocs" } },
-                { name: 'null', val: null, expected: { cyrb64: "1k622w40cyx0wp", murmur3: "0agt99e1g6opc3", sha256: "0w82hso1ct1tov1egi1v70tmenbe1knpmck1x6bvwb12uheaa1x8aiob" } },
-                { name: 'true', val: true, expected: { cyrb64: "0vy7m1w0dany9w", murmur3: "0sw0mpr15aaslg", sha256: "1efeal70u2m5j002rbx2c1p8bkkr1biex251455d2j1ig29pw0k38oiz" } },
-                { name: 'false', val: false, expected: { cyrb64: "1icmybb1cfcxmj", murmur3: "1ovklyc1rhg7f8", sha256: "1y4j2w5143wqkq17x3qwv0ayldh21ox3exv1e01jpv0w7kco40msimy2" } },
-                { name: 'hello', val: 'hello', expected: { cyrb64: "0ynwak70phyl85", murmur3: "0ys3k3q0k6sy3c", sha256: "0p5ikry0flus8i0y44w4j0ubmmxx1f9kntk155k8q80m4yqyn0hjdapm" } },
-                { name: 'empty_string', val: '', expected: { cyrb64: "1jrck0004d38of", murmur3: "0nr284c1tms2nt", sha256: "056ldqj08j5rep1txp7ob054n1m60gdvdx10vvz7hr09vi2sg0h2f2na" } },
-                { name: 'number_42', val: 42, expected: { cyrb64: "1sx7w750aiugos", murmur3: "0wgber4102xyyk", sha256: "0vzhjn802v9itp1ascwy61m09pxa05zzkei1imbdq30tpq2jp07jz7m1" } },
-                { name: 'number_neg_pi', val: -3.14, expected: { cyrb64: "00u5v0c18zcxgs", murmur3: "1388cq116239z8", sha256: "0tnh1oh0yuf9q51eanbl51l2fi0x0fcstvb15xp5fs0qqqsho1dwasd5" } },
-                { name: 'number_nan', val: NaN, expected: { cyrb64: "08e34o01e6l6gc", murmur3: "02gg5z10okvh0n", sha256: "1naokao0q0j8sw0dyrfvf0b330d71sr26fz0w597lc0bxqi3k1idjf32" } },
-                { name: 'number_inf', val: Infinity, expected: { cyrb64: "0008xvt1wnodtm", murmur3: "0g69gtp0ivxp2q", sha256: "1lpwnn116u5ri90fcvkqj10n5bre0w03kst196xnd002xge3h1eohk40" } },
-                { name: 'number_neg_inf', val: -Infinity, expected: { cyrb64: "0004krl19rlchq", murmur3: "0qq6let0eokjfh", sha256: "1j0szkh1ge5xeo1utdvq503d81is0o5loer1y13rmx1abr8ki1cjsugp" } },
-                { name: 'bigint', val: 12345678901234567890n, expected: { cyrb64: "1updgie0pssuzl", murmur3: "1089vax0ay9fcb", sha256: "1bsatrz1y2ogoi0lhglnv0fxnza40er1y8m1a4ylda0ymv1y9095kmpg" } },
-                { name: 'symbol_desc', val: sym, expected: { cyrb64: "1a0ry5y02ol74x", murmur3: "1x3ojt10trjoti", sha256: "14eqxc51cpi4w107uo68i1srd1jz1horjcp1ks7o0a1xscv831pvmweg" } },
-                { name: 'symbol_nodesc', val: symNoDesc, expected: { cyrb64: "06a1dtm0o6es7q", murmur3: "09ht3q20dvi1yq", sha256: "16pjn3f1x6t7zv05s8wdb06t4jw00emrfr11v3ykto0ljbc501d8xxfd" } },
-                { name: 'plain_object', val: { a: 1, b: 2 }, expected: { cyrb64: "0mfbhsk1k9xxs9", murmur3: "0umekk61053jbe", sha256: "0impji70xd51c30ue5ybn0hmehnj1iycbp30fksgno12i7v0811s2l4n" } },
-                { name: 'plain_object_alt_order', val: { b: 2, a: 1 }, expected: { cyrb64: "0mfbhsk1k9xxs9", murmur3: "0umekk61053jbe", sha256: "0impji70xd51c30ue5ybn0hmehnj1iycbp30fksgno12i7v0811s2l4n" } },
-                { name: 'nested_object', val: { x: { y: { z: 3 } } }, expected: { cyrb64: "02za47w0zzd13g", murmur3: "09rhse515097r5", sha256: "1n5qamz0gjjnwj1n73j2o1og2qk01r7kj6o1k4obq210m2u8a162lzuo" } },
-                { name: 'array', val: [3, 2, 1], expected: { cyrb64: "1hjdiu10kau8mf", murmur3: "151nlqp1k24k39", sha256: "0dja0in175ejf21u4p6471vm665q0su23zr08394gr10dr37l0m4d759" } },
-                { name: 'set', val: new Set([2, 1]), expected: { cyrb64: "04p6jxz08y0i4r", murmur3: "14kpjyi0g0ch26", sha256: "1mo6r7p0w8haz71d6try90tlut4x0ldsc5v103i36p1p6m1np0nrb0gn" } },
-                { name: 'map', val: new Map([['b', 2], ['a', 1]]), expected: { cyrb64: "0276lyp17sd1ya", murmur3: "1i2q0qs0b9lvq6", sha256: "0m37czj1mttumu0l972o11jny60j0clg0xr0vgij8f11w6g521gxr8eg" } },
-                { name: 'boxed_string', val: new String("boxed"), expected: { cyrb64: "1sitr570hwmpi4", murmur3: "1v8b7jr1qsz9f4", sha256: "0m10n690scutva1tn9nxk15xlrva015732r0b2vwnz1vt73zl0fddftn" } },
-                { name: 'boxed_number', val: new Number(123), expected: { cyrb64: "19weemc1hspbnf", murmur3: "0u71aip0xjk9zo", sha256: "1a63dcp08y7z4t0i66zqf1ujwf5k18h35fj1yscvwe16lu2uv1wpjxsz" } },
-                { name: 'boxed_boolean', val: new Boolean(true), expected: { cyrb64: "0vy7m1w0dany9w", murmur3: "0sw0mpr15aaslg", sha256: "1efeal70u2m5j002rbx2c1p8bkkr1biex251455d2j1ig29pw0k38oiz" } },
-                { name: 'boxed_symbol', val: Object(Symbol("boxed-symbol")), expected: { cyrb64: "1dlqvhe00mwpa2", murmur3: "177w83f1rpolw3", sha256: "0ted84n1d1xc9m00qxn20045sx5b0csvaxx0zt42680jk6nyg1lnhy5u" } },
-                { name: 'date', val: new Date("2026-07-20T07:20:00.000Z"), expected: { cyrb64: "0e3j8gr1v4nvni", murmur3: "0ffx0h5143jwkv", sha256: "0o8zn8m1b6hb5a19m4xlb074nvlz0hqp0980kik5en182obkh018yr22" } },
-                { name: 'regexp', val: /abc/gi, expected: { cyrb64: "0p08otz1mo0mmt", murmur3: "0a5aze814v5eud", sha256: "04fybqt1o6h8ze07p0fdu0yxslsy1yrtxkr0b3qxqh06854rp1o8v5ee" } },
-                { name: 'error', val: new Error("error message"), expected: { cyrb64: "00kv7wp14b2tse", murmur3: "0ymqq9l0cqb2ao", sha256: "0i4g03m1gbr9e80j45mwg18h3o6w0gbno7f0n2voh60x7zvkx06h97ep" } },
-                { name: 'url', val: new URL("https://example.com/foo"), expected: { cyrb64: "0ucgoaj1sd3uxf", murmur3: "0fo5ly71nhbaj6", sha256: "07qio3h03f3du81ekp3qw1t2go5e10n83960wqq43j1mi160r1d8bbcw" } },
-                { name: 'url_search_params', val: new URLSearchParams("x=1&y=2"), expected: { cyrb64: "00ps6tb0525c3a", murmur3: "0uarccw02r55og", sha256: "11iqdif0v3r7li0nl3jby1tfypg90st11su1czoos20ackwgo1tvgms3" } },
-                { name: 'to_json_object', val: objWithToJSON, expected: { cyrb64: "12tqpro0r475iu", murmur3: "0wmse800j0gyi2", sha256: "04a4b9v1a9cf8h0ylmb840me0eit102w1mf00jtqz90z7dby60byaqlt" } },
-                { name: 'to_json_class', val: new CustomClassWithToJSON(), expected: { cyrb64: "1unra0p1b5ffmb", murmur3: "0t0bu2n0mk3lqf", sha256: "14kw3n01nj8uzi087mi9y1y1lx631wmfs9513hgra715dqq650nwzw26" } },
-                { name: 'uint8array', val: new Uint8Array([1, 2, 3]), expected: { cyrb64: "15jjg7k0gq55kl", murmur3: "0u9r3w8075qcj8", sha256: "1rohx7910zm35y1klte7s16ggn0l0830uvh1ega6wt0ljts3a18oe338" } },
-                { name: 'duplicate_symbols', val: { [symSame2]: 'v2', [symSame1]: 'v1' }, expected: { cyrb64: "0y8a6k21o771vc", murmur3: "17qoa531e2e5g3", sha256: "1q48ef000mxopz1hv9ix50jjm1oc1qvf04j0saib3e1s5w4mf08or37k" } },
-                { name: 'nested_array_of_objects', val: [ { a: 1, b: [ 2, 3 ] }, { c: { d: 4 } } ], expected: { cyrb64: "1keegjg11a9l5a", murmur3: "0016j2n1yyrdcp", sha256: "0ncebj90cwa2t20ndzptk0iihs9r0ww7jfl1gdhuyi1j9z7w2194vaa1" } },
-                { name: 'deep_mixed_structure', val: { a: [ { x: 1 } ], b: new Map([ [ 'key', { nested: [ 1, 2 ] } ] ]) }, expected: { cyrb64: "1ute4ow0y1lguw", murmur3: "1wdy03w13sw9y2", sha256: "0ijbenb06qi5fp1noc5541tu1ma8161wen41bnpyfv0gdbunu1py4i5t" } },
-                { name: 'complex_nested_json', val: { user: { id: 123, profile: { name: 'John', tags: ['admin', 'user'] } }, meta: { status: 'active' } }, expected: { cyrb64: "1n7wmzj1v0q51v", murmur3: "08ziee20gk8izo", sha256: "0j9iq3x1r9y48z0yyzclf1bgqbvq1cwwel60y4fu5o0u5nf9z1rigban" } },
-                { name: 'array_of_mixed_types', val: [ 1, 'text', { obj: true }, [ 1, 2 ], new Set([3, 4]) ], expected: { cyrb64: "1qlzrt502exq9n", murmur3: "0gp46k40uhy4gy", sha256: "0t02bvu1cqq0uy1yismyv1bsp21k1om4ux504i829u0ylx80s0bb1pwk" } }
+                { name: 'undefined', val: undefined, expected: { cyrb64: "1bp0z6i0ccfje0", murmur3: "0kshffl0knhv3904eqnv41j02xud", sha256: "1t7ipo81me4cxf0k628zw00i7fcl0mzfhrf1ga8jnl1dx7ad116wvocs" } },
+                { name: 'null', val: null, expected: { cyrb64: "1k622w40cyx0wp", murmur3: "0agt99e1g6opc30z1gptz00uhd37", sha256: "0w82hso1ct1tov1egi1v70tmenbe1knpmck1x6bvwb12uheaa1x8aiob" } },
+                { name: 'true', val: true, expected: { cyrb64: "0vy7m1w0dany9w", murmur3: "0sw0mpr15aaslg0qur09d15vgwix", sha256: "1efeal70u2m5j002rbx2c1p8bkkr1biex251455d2j1ig29pw0k38oiz" } },
+                { name: 'false', val: false, expected: { cyrb64: "1icmybb1cfcxmj", murmur3: "1ovklyc1rhg7f812950930h1o7jy", sha256: "1y4j2w5143wqkq17x3qwv0ayldh21ox3exv1e01jpv0w7kco40msimy2" } },
+                { name: 'hello', val: 'hello', expected: { cyrb64: "0ynwak70phyl85", murmur3: "0ys3k3q0k6sy3c0ech7io07eufy4", sha256: "0p5ikry0flus8i0y44w4j0ubmmxx1f9kntk155k8q80m4yqyn0hjdapm" } },
+                { name: 'empty_string', val: '', expected: { cyrb64: "1jrck0004d38of", murmur3: "0nr284c1tms2nt10okogt1fpp4uk", sha256: "056ldqj08j5rep1txp7ob054n1m60gdvdx10vvz7hr09vi2sg0h2f2na" } },
+                { name: 'number_42', val: 42, expected: { cyrb64: "1sx7w750aiugos", murmur3: "0wgber4102xyyk0dhfwd20k9zxi0", sha256: "0vzhjn802v9itp1ascwy61m09pxa05zzkei1imbdq30tpq2jp07jz7m1" } },
+                { name: 'number_neg_pi', val: -3.14, expected: { cyrb64: "00u5v0c18zcxgs", murmur3: "1388cq116239z80wrlpq3062695h", sha256: "0tnh1oh0yuf9q51eanbl51l2fi0x0fcstvb15xp5fs0qqqsho1dwasd5" } },
+                { name: 'number_nan', val: NaN, expected: { cyrb64: "08e34o01e6l6gc", murmur3: "02gg5z10okvh0n1wtyh3w0n0cts0", sha256: "1naokao0q0j8sw0dyrfvf0b330d71sr26fz0w597lc0bxqi3k1idjf32" } },
+                { name: 'number_inf', val: Infinity, expected: { cyrb64: "0008xvt1wnodtm", murmur3: "0g69gtp0ivxp2q11bv2v20hjx14p", sha256: "1lpwnn116u5ri90fcvkqj10n5bre0w03kst196xnd002xge3h1eohk40" } },
+                { name: 'number_neg_inf', val: -Infinity, expected: { cyrb64: "0004krl19rlchq", murmur3: "0qq6let0eokjfh14by57k0rrsgwg", sha256: "1j0szkh1ge5xeo1utdvq503d81is0o5loer1y13rmx1abr8ki1cjsugp" } },
+                { name: 'bigint', val: 12345678901234567890n, expected: { cyrb64: "1updgie0pssuzl", murmur3: "1089vax0ay9fcb0ygenz315i7pfm", sha256: "1bsatrz1y2ogoi0lhglnv0fxnza40er1y8m1a4ylda0ymv1y9095kmpg" } },
+                { name: 'symbol_desc', val: sym, expected: { cyrb64: "1a0ry5y02ol74x", murmur3: "1x3ojt10trjoti09ommn10j3ucgi", sha256: "14eqxc51cpi4w107uo68i1srd1jz1horjcp1ks7o0a1xscv831pvmweg" } },
+                { name: 'symbol_nodesc', val: symNoDesc, expected: { cyrb64: "06a1dtm0o6es7q", murmur3: "09ht3q20dvi1yq0phv1jk09wc3x3", sha256: "16pjn3f1x6t7zv05s8wdb06t4jw00emrfr11v3ykto0ljbc501d8xxfd" } },
+                { name: 'plain_object', val: { a: 1, b: 2 }, expected: { cyrb64: "0mfbhsk1k9xxs9", murmur3: "0umekk61053jbe0ro7olf1e5e9nw", sha256: "0impji70xd51c30ue5ybn0hmehnj1iycbp30fksgno12i7v0811s2l4n" } },
+                { name: 'plain_object_alt_order', val: { b: 2, a: 1 }, expected: { cyrb64: "0mfbhsk1k9xxs9", murmur3: "0umekk61053jbe0ro7olf1e5e9nw", sha256: "0impji70xd51c30ue5ybn0hmehnj1iycbp30fksgno12i7v0811s2l4n" } },
+                { name: 'nested_object', val: { x: { y: { z: 3 } } }, expected: { cyrb64: "02za47w0zzd13g", murmur3: "09rhse515097r50qqur4d0nx7dhd", sha256: "1n5qamz0gjjnwj1n73j2o1og2qk01r7kj6o1k4obq210m2u8a162lzuo" } },
+                { name: 'array', val: [3, 2, 1], expected: { cyrb64: "1hjdiu10kau8mf", murmur3: "151nlqp1k24k391e19rep1t9jbj5", sha256: "0dja0in175ejf21u4p6471vm665q0su23zr08394gr10dr37l0m4d759" } },
+                { name: 'set', val: new Set([2, 1]), expected: { cyrb64: "04p6jxz08y0i4r", murmur3: "14kpjyi0g0ch2616jf162139l4hp", sha256: "1mo6r7p0w8haz71d6try90tlut4x0ldsc5v103i36p1p6m1np0nrb0gn" } },
+                { name: 'map', val: new Map([['b', 2], ['a', 1]]), expected: { cyrb64: "0276lyp17sd1ya", murmur3: "1i2q0qs0b9lvq617nupg20mebi5y", sha256: "0m37czj1mttumu0l972o11jny60j0clg0xr0vgij8f11w6g521gxr8eg" } },
+                { name: 'boxed_string', val: new String("boxed"), expected: { cyrb64: "1sitr570hwmpi4", murmur3: "1v8b7jr1qsz9f4194jhdj0xcbkph", sha256: "0m10n690scutva1tn9nxk15xlrva015732r0b2vwnz1vt73zl0fddftn" } },
+                { name: 'boxed_number', val: new Number(123), expected: { cyrb64: "19weemc1hspbnf", murmur3: "0u71aip0xjk9zo08828350jph2l3", sha256: "1a63dcp08y7z4t0i66zqf1ujwf5k18h35fj1yscvwe16lu2uv1wpjxsz" } },
+                { name: 'boxed_boolean', val: new Boolean(true), expected: { cyrb64: "0vy7m1w0dany9w", murmur3: "0sw0mpr15aaslg0qur09d15vgwix", sha256: "1efeal70u2m5j002rbx2c1p8bkkr1biex251455d2j1ig29pw0k38oiz" } },
+                { name: 'boxed_symbol', val: Object(Symbol("boxed-symbol")), expected: { cyrb64: "1dlqvhe00mwpa2", murmur3: "177w83f1rpolw31e0bjau015keji", sha256: "0ted84n1d1xc9m00qxn20045sx5b0csvaxx0zt42680jk6nyg1lnhy5u" } },
+                { name: 'date', val: new Date("2026-07-20T07:20:00.000Z"), expected: { cyrb64: "0e3j8gr1v4nvni", murmur3: "0ffx0h5143jwkv1211gp413yt27s", sha256: "0o8zn8m1b6hb5a19m4xlb074nvlz0hqp0980kik5en182obkh018yr22" } },
+                { name: 'regexp', val: /abc/gi, expected: { cyrb64: "0p08otz1mo0mmt", murmur3: "0a5aze814v5eud0henjxn0ifglgg", sha256: "04fybqt1o6h8ze07p0fdu0yxslsy1yrtxkr0b3qxqh06854rp1o8v5ee" } },
+                { name: 'error', val: new Error("error message"), expected: { cyrb64: "00kv7wp14b2tse", murmur3: "0ymqq9l0cqb2ao1xvllh40qfawxy", sha256: "0i4g03m1gbr9e80j45mwg18h3o6w0gbno7f0n2voh60x7zvkx06h97ep" } },
+                { name: 'url', val: new URL("https://example.com/foo"), expected: { cyrb64: "0ucgoaj1sd3uxf", murmur3: "0fo5ly71nhbaj60gdqi131idaimp", sha256: "07qio3h03f3du81ekp3qw1t2go5e10n83960wqq43j1mi160r1d8bbcw" } },
+                { name: 'url_search_params', val: new URLSearchParams("x=1&y=2"), expected: { cyrb64: "00ps6tb0525c3a", murmur3: "0uarccw02r55og0fqek141nwx7ym", sha256: "11iqdif0v3r7li0nl3jby1tfypg90st11su1czoos20ackwgo1tvgms3" } },
+                { name: 'to_json_object', val: objWithToJSON, expected: { cyrb64: "12tqpro0r475iu", murmur3: "0wmse800j0gyi20xw58ea1l3g4gw", sha256: "04a4b9v1a9cf8h0ylmb840me0eit102w1mf00jtqz90z7dby60byaqlt" } },
+                { name: 'to_json_class', val: new CustomClassWithToJSON(), expected: { cyrb64: "1unra0p1b5ffmb", murmur3: "0t0bu2n0mk3lqf08305pa04ds5uo", sha256: "14kw3n01nj8uzi087mi9y1y1lx631wmfs9513hgra715dqq650nwzw26" } },
+                { name: 'uint8array', val: new Uint8Array([1, 2, 3]), expected: { cyrb64: "15jjg7k0gq55kl", murmur3: "0u9r3w8075qcj81ievsi30abwvbk", sha256: "1rohx7910zm35y1klte7s16ggn0l0830uvh1ega6wt0ljts3a18oe338" } },
+                { name: 'duplicate_symbols', val: { [symSame2]: 'v2', [symSame1]: 'v1' }, expected: { cyrb64: "0y8a6k21o771vc", murmur3: "17qoa531e2e5g31fykvef12oy212", sha256: "1q48ef000mxopz1hv9ix50jjm1oc1qvf04j0saib3e1s5w4mf08or37k" } },
+                { name: 'nested_array_of_objects', val: [ { a: 1, b: [ 2, 3 ] }, { c: { d: 4 } } ], expected: { cyrb64: "1keegjg11a9l5a", murmur3: "0016j2n1yyrdcp092dz9y1u48gvm", sha256: "0ncebj90cwa2t20ndzptk0iihs9r0ww7jfl1gdhuyi1j9z7w2194vaa1" } },
+                { name: 'deep_mixed_structure', val: { a: [ { x: 1 } ], b: new Map([ [ 'key', { nested: [ 1, 2 ] } ] ]) }, expected: { cyrb64: "1ute4ow0y1lguw", murmur3: "1wdy03w13sw9y21yf16881367ujq", sha256: "0ijbenb06qi5fp1noc5541tu1ma8161wen41bnpyfv0gdbunu1py4i5t" } },
+                { name: 'complex_nested_json', val: { user: { id: 123, profile: { name: 'John', tags: ['admin', 'user'] } }, meta: { status: 'active' } }, expected: { cyrb64: "1n7wmzj1v0q51v", murmur3: "08ziee20gk8izo06xvlbs0fa04uk", sha256: "0j9iq3x1r9y48z0yyzclf1bgqbvq1cwwel60y4fu5o0u5nf9z1rigban" } },
+                { name: 'array_of_mixed_types', val: [ 1, 'text', { obj: true }, [ 1, 2 ], new Set([3, 4]) ], expected: { cyrb64: "1qlzrt502exq9n", murmur3: "0gp46k40uhy4gy0m8zbp21oai5vb", sha256: "0t02bvu1cqq0uy1yismyv1bsp21k1om4ux504i829u0ylx80s0bb1pwk" } }
             ];
 
             for( const c of cases )

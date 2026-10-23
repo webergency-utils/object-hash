@@ -1,8 +1,31 @@
 import Cyrb64Hash from './alg/cyrb64';
 import MurmurHash3 from './alg/murmur3';
-import { encodeBytes } from './alg/base';
+import Sha256Hash from './alg/sha256';
+import 
+{ 
+    encodeBytes, 
+    validateBitLength, 
+    validateEncoding, 
+    type BitLength, 
+    type Encoding 
+} 
+from './alg/base';
 
-declare const require: any;
+export { Cyrb64Hash, MurmurHash3, Sha256Hash };
+
+const UTF8_ENCODER = new TextEncoder();
+
+function getNodeCrypto(): any
+{
+    try
+    {
+        return ( globalThis as any ).process?.getBuiltinModule?.( 'crypto' );
+    }
+    catch( _ )
+    {
+        return undefined;
+    }
+}
 
 class StringAccumulator
 {
@@ -26,19 +49,36 @@ class StringAccumulator
     }
 }
 
-interface Accumulator
+export interface Accumulator
 {
     update( str: string ): void
     updateBytes( bytes: Uint8Array ): void
 }
 
+export interface CustomHasher
+{
+    update( data: any )             : unknown
+    updateBytes?( bytes: Uint8Array ): unknown
+    digest( encoding?: any )        : string | Uint8Array
+}
+
+export type Algorithm = 'cyrb64' | 'murmur3' | 'sha256' | 'fast' | 'balanced' | 'strong';
+
+export type HasherInput =
+    | Algorithm
+    | CustomHasher
+    | (( bitLength?: BitLength ) => CustomHasher )
+    | ( new ( bitLength?: BitLength ) => CustomHasher );
+
 class HasherAdapter implements Accumulator
 {
     #hasher: any;
+    #byteLength?: number;
 
-    constructor( hasher: any )
+    constructor( hasher: any, byteLength?: number )
     {
         this.#hasher = hasher;
+        this.#byteLength = byteLength;
     }
 
     update( str: string )
@@ -58,52 +98,164 @@ class HasherAdapter implements Accumulator
         }
     }
 
-    digest(): Uint8Array
+    digest( raw: boolean = false ): Uint8Array | string
     {
-        const val = this.#hasher.digest();
+        const target = typeof this.#hasher.copy === 'function'
+            ? this.#hasher.copy()
+            : this.#hasher;
+        const val = target.digest();
 
-        return val;
+        if( val instanceof Uint8Array )
+        {
+            const len = this.#byteLength !== undefined
+                ? Math.min( val.byteLength, this.#byteLength )
+                : val.byteLength;
+
+            if( val.constructor !== Uint8Array || len !== val.byteLength )
+            {
+                return new Uint8Array( val.buffer, val.byteOffset, len );
+            }
+
+            return val;
+        }
+
+        if( raw )
+        {
+            const encoded = UTF8_ENCODER.encode( String( val ));
+
+            return this.#byteLength !== undefined
+                ? encoded.subarray( 0, this.#byteLength )
+                : encoded;
+        }
+
+        return String( val );
     }
 }
 
-function createHasher( opt: any, bitLength: 64 | 96 | 128 | 192 | 256 ): Accumulator
+function defaultBitLengthForAlgorithm( alg: 'cyrb64' | 'murmur3' | 'sha256' ): BitLength
 {
-    let instance: any;
+    if( alg === 'cyrb64' ){ return 64 }
+
+    if( alg === 'murmur3' ){ return 128 }
+
+    return 256;
+}
+
+function createSha256Hasher( bitLength: BitLength ): HasherAdapter
+{
+    const nodeCrypto = getNodeCrypto();
+
+    if( nodeCrypto && typeof nodeCrypto.createHash === 'function' )
+    {
+        return new HasherAdapter( nodeCrypto.createHash( 'sha256' ), bitLength / 8 );
+    }
+
+    return new HasherAdapter( new Sha256Hash( bitLength ));
+}
+
+function createHasher( opt: any, bitLength?: BitLength ): HasherAdapter
+{
+    if( bitLength !== undefined )
+    {
+        validateBitLength( bitLength );
+    }
 
     if( typeof opt === 'string' )
     {
-        const crypto = require( 'crypto' );
-
-        instance = crypto.createHash( opt );
-    }
-    else if( typeof opt === 'function' )
-    {
-        const isClass = /^\s*class\s+/.test( opt.toString() );
-
-        if( isClass )
+        if( opt === 'cyrb64' || opt === 'fast' )
         {
-            instance = new opt( bitLength );
+            const b = bitLength ?? 64;
+
+            return new HasherAdapter( new Cyrb64Hash( b ));
         }
-        else
+
+        if( opt === 'murmur3' || opt === 'balanced' )
         {
-            instance = opt( bitLength );
+            const b = bitLength ?? 128;
+
+            return new HasherAdapter( new MurmurHash3( b ));
         }
-    }
-    else if( typeof opt === 'object' && opt !== null )
-    {
-        instance = opt;
-    }
-    else
-    {
-        instance = new Cyrb64Hash( bitLength );
+
+        if( opt === 'sha256' || opt === 'strong' )
+        {
+            const b = bitLength ?? 256;
+
+            return createSha256Hasher( b );
+        }
+
+        const nodeCrypto = getNodeCrypto();
+
+        if( nodeCrypto && typeof nodeCrypto.createHash === 'function' )
+        {
+            return new HasherAdapter( nodeCrypto.createHash( opt ), bitLength ? bitLength / 8 : undefined );
+        }
+
+        throw new Error( `Unsupported hashing algorithm: ${ opt }` );
     }
 
-    return new HasherAdapter( instance );
+    if( typeof opt === 'function' )
+    {
+        const b = bitLength ?? 64;
+        let instance: any;
+
+        try
+        {
+            instance = opt( b );
+
+            if( instance === undefined )
+            {
+                instance = new opt( b );
+            }
+        }
+        catch( _ )
+        {
+            instance = new opt( b );
+        }
+
+        return new HasherAdapter( instance, bitLength ? bitLength / 8 : undefined );
+    }
+
+    if( typeof opt === 'object' && opt !== null )
+    {
+        return new HasherAdapter( opt, bitLength ? bitLength / 8 : undefined );
+    }
+
+    const b = bitLength ?? 64;
+
+    return new HasherAdapter( new Cyrb64Hash( b ));
 }
 
-function digestToString( hasher: any, encoding?: 'hex' | 'base36' | 'base62' | 'base64' | 'base64url' ): string
+function createConfiguredHasher( options: Partial<ObjectStringifyOptions> ): { hasher: HasherAdapter, encoding: Encoding }
 {
-    const digest = hasher.digest();
+    const { bitLength, algorithm = 'fast', encoding = 'base36', hasher } = options;
+
+    validateEncoding( encoding );
+
+    if( bitLength !== undefined )
+    {
+        validateBitLength( bitLength );
+    }
+
+    if( hasher !== undefined )
+    {
+        return {
+            hasher: createHasher( hasher, bitLength ),
+            encoding
+        };
+    }
+
+    const resolvedAlg = resolveAlgorithm( algorithm );
+    const resolvedBits = bitLength ?? defaultBitLengthForAlgorithm( resolvedAlg );
+
+    return {
+        hasher: createHasher( resolvedAlg, resolvedBits ),
+        encoding
+    };
+}
+
+function digestToString( hasher: HasherAdapter, encoding: Encoding = 'base36' ): string
+{
+    const digest = hasher.digest( false );
 
     return typeof digest === 'string' ? digest : encodeBytes( digest, encoding );
 }
@@ -120,18 +272,11 @@ const randomID = (): string =>
         return Array.from( arr, byte => byte.toString( 16 ).padStart( 2, '0' ) ).join( '' );
     }
 
-    try
-    {
-        const nodeCrypto = require( 'crypto' );
+    const nodeCrypto = getNodeCrypto();
 
-        if( typeof nodeCrypto.randomBytes === 'function' )
-        {
-            return nodeCrypto.randomBytes( 16 ).toString( 'hex' );
-        }
-    }
-    catch( _ )
+    if( nodeCrypto && typeof nodeCrypto.randomBytes === 'function' )
     {
-        // Fallback
+        return nodeCrypto.randomBytes( 16 ).toString( 'hex' );
     }
 
     return Math.random().toString( 36 ).slice( 2 ) + Math.random().toString( 36 ).slice( 2 );
@@ -180,22 +325,22 @@ function getEnumerableKeys( obj: any ): (string | symbol)[]
 type BaseOptions = {
     sortArrays                  : boolean
     ignoreUndefinedProperties   : boolean
-    stringify?                  : ( obj: object ) => string | undefined
-    bitLength?                  : 64 | 96 | 128 | 192 | 256
-    encoding?                   : 'hex' | 'base36' | 'base62' | 'base64' | 'base64url'
-    excludeKeys?                : string[]
-    includeKeys?                : string[]
+    stringify?                  : ( obj: any ) => string | undefined
+    bitLength?                  : BitLength
+    encoding?                   : Encoding
+    excludeKeys?                : ( string | symbol )[]
+    includeKeys?                : ( string | symbol )[]
     excludeValues?              : boolean
 }
 
 type AlgorithmOptions = BaseOptions & {
-    algorithm?                  : 'cyrb64' | 'murmur3' | 'sha256' | 'fast' | 'balanced' | 'strong'
-    hasher                      : never
+    algorithm?                  : Algorithm
+    hasher?                     : never
 }
 
 type HasherOptions = BaseOptions & {
-    algorithm                   : never
-    hasher                      : Accumulator
+    algorithm?                  : never
+    hasher?                     : HasherInput
 }
 
 export type ObjectStringifyOptions = AlgorithmOptions | HasherOptions;
@@ -553,10 +698,8 @@ export function objectStringify( obj: any, options: Partial<ObjectStringifyOptio
 
 export default function objectHash( obj: any, options: Partial<ObjectStringifyOptions> = {} ): string
 {
-    const { sortArrays = false, ignoreUndefinedProperties = true, stringify, bitLength = 64, algorithm = 'fast', encoding = 'base36', hasher, excludeKeys, includeKeys, excludeValues } = options;
-
-    const resolvedAlg = resolveAlgorithm( algorithm );
-    const mainHasher = createHasher( hasher || ( resolvedAlg === 'murmur3' ? MurmurHash3 : ( resolvedAlg === 'cyrb64' ? Cyrb64Hash : resolvedAlg ) ), bitLength );
+    const { sortArrays = false, ignoreUndefinedProperties = true, stringify, excludeKeys, includeKeys, excludeValues } = options;
+    const { hasher: mainHasher, encoding } = createConfiguredHasher( options );
 
     _objectStringify( obj, new Set(), { sortArrays, ignoreUndefinedProperties, stringify, excludeKeys, includeKeys, excludeValues } as any, mainHasher );
 
@@ -565,14 +708,12 @@ export default function objectHash( obj: any, options: Partial<ObjectStringifyOp
 
 export function objectHashBytes( obj: any, options: Partial<ObjectStringifyOptions> = {} ): Uint8Array
 {
-    const { sortArrays = false, ignoreUndefinedProperties = true, stringify, bitLength = 64, algorithm = 'fast', hasher, excludeKeys, includeKeys, excludeValues } = options;
-
-    const resolvedAlg = resolveAlgorithm( algorithm );
-    const mainHasher = createHasher( hasher || ( resolvedAlg === 'murmur3' ? MurmurHash3 : ( resolvedAlg === 'cyrb64' ? Cyrb64Hash : resolvedAlg ) ), bitLength );
+    const { sortArrays = false, ignoreUndefinedProperties = true, stringify, excludeKeys, includeKeys, excludeValues } = options;
+    const { hasher: mainHasher } = createConfiguredHasher( options );
 
     _objectStringify( obj, new Set(), { sortArrays, ignoreUndefinedProperties, stringify, excludeKeys, includeKeys, excludeValues } as any, mainHasher );
 
-    return (mainHasher as HasherAdapter).digest();
+    return mainHasher.digest( true ) as Uint8Array;
 }
 
 export class Hasher
@@ -603,48 +744,48 @@ export class Hasher
 export class StreamingHash
 {
     #options: Partial<ObjectStringifyOptions>;
-    #accumulator: StringAccumulator;
+    #hasher: HasherAdapter;
+    #encoding: Encoding;
 
     constructor( options: Partial<ObjectStringifyOptions> = {} )
     {
         this.#options = options;
-        this.#accumulator = new StringAccumulator();
+
+        const configured = createConfiguredHasher( this.#options );
+        this.#hasher = configured.hasher;
+        this.#encoding = configured.encoding;
     }
 
     update( obj: any ): this
     {
         const { sortArrays = false, ignoreUndefinedProperties = true, stringify, excludeKeys, includeKeys, excludeValues } = this.#options;
+        const chunkAccumulator = new StringAccumulator();
 
-        _objectStringify( obj, new Set(), { sortArrays, ignoreUndefinedProperties, stringify, excludeKeys, includeKeys, excludeValues } as any, this.#accumulator );
+        _objectStringify( obj, new Set(), { sortArrays, ignoreUndefinedProperties, stringify, excludeKeys, includeKeys, excludeValues } as any, chunkAccumulator );
+
+        const chunk = chunkAccumulator.toString();
+
+        this.#hasher.update( `${ chunk.length }:` );
+        this.#hasher.update( chunk );
 
         return this;
     }
 
     digest(): string
     {
-        const { bitLength = 64, algorithm = 'fast', encoding = 'base36', hasher } = this.#options;
-        const resolvedAlg = resolveAlgorithm( algorithm );
-        const mainHasher = createHasher( hasher || ( resolvedAlg === 'murmur3' ? MurmurHash3 : ( resolvedAlg === 'cyrb64' ? Cyrb64Hash : resolvedAlg ) ), bitLength );
-
-        mainHasher.update( this.#accumulator.toString() );
-
-        return digestToString( mainHasher, encoding );
+        return digestToString( this.#hasher, this.#encoding );
     }
 
     digestBytes(): Uint8Array
     {
-        const { bitLength = 64, algorithm = 'fast', hasher } = this.#options;
-        const resolvedAlg = resolveAlgorithm( algorithm );
-        const mainHasher = createHasher( hasher || ( resolvedAlg === 'murmur3' ? MurmurHash3 : ( resolvedAlg === 'cyrb64' ? Cyrb64Hash : resolvedAlg ) ), bitLength );
-
-        mainHasher.update( this.#accumulator.toString() );
-
-        return (mainHasher as HasherAdapter).digest();
+        return this.#hasher.digest( true ) as Uint8Array;
     }
 
     reset(): this
     {
-        this.#accumulator = new StringAccumulator();
+        const configured = createConfiguredHasher( this.#options );
+        this.#hasher = configured.hasher;
+        this.#encoding = configured.encoding;
 
         return this;
     }
