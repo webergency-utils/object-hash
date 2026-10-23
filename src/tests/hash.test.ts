@@ -110,13 +110,13 @@ describe( 'object-hash tests', () =>
         set.add( set );
 
         expect( () => objectHash( set )).not.toThrow();
-        expect( objectStringify( set )).toBe( 'Set(*Circular*)' );
+        expect( objectStringify( set )).toBe( 'Set{10:*Circular*}' );
 
         const map: any = new Map();
         map.set( map, map );
 
         expect( () => objectHash( map )).not.toThrow();
-        expect( objectStringify( map )).toBe( 'Map(*Circular*:*Circular*)' );
+        expect( objectStringify( map )).toBe( 'Map{28:10:*Circular*=>10:*Circular*}' );
     });
 
     test( 'should handle Date and RegExp object types', () =>
@@ -154,8 +154,8 @@ describe( 'object-hash tests', () =>
 
         expect( objectHash( err1 )).toBe( objectHash( err2 ));
         expect( objectHash( err1 )).not.toBe( objectHash( err3 ));
-        expect( objectStringify( err1 )).toBe( 'Error: something went wrong' );
-        expect( objectStringify( err3 )).toBe( 'TypeError: something went wrong' );
+        expect( objectStringify( err1 )).toBe( 'Error(5:Error,20:something went wrong)' );
+        expect( objectStringify( err3 )).toBe( 'Error(9:TypeError,20:something went wrong)' );
 
         // URL tests
         const url1 = new URL( 'https://example.com/path?query=1' );
@@ -226,7 +226,7 @@ describe( 'object-hash tests', () =>
 
         expect( objectHash( map1 )).toBe( objectHash( map2 ));
 
-        const expectedStringify = 'Map("stringKey":"value1",123:"value2",2026-06-20T00:00:00.000Z:"value5",[1,2]:"value4",{"a":1}:"value3")';
+        const expectedStringify = 'Map{26:11:"stringKey"=>8:"value1",39:24:2026-06-20T00:00:00.000Z=>8:"value5",17:3:123=>8:"value2",19:5:[1,2]=>8:"value4",21:7:{"a":1}=>8:"value3"}';
         expect( objectStringify( map1 )).toBe( expectedStringify );
     });
 
@@ -324,7 +324,7 @@ describe( 'object-hash tests', () =>
         expect( objectHash( obj1 )).toBe( objectHash( obj2 ));
 
         // Symbols are stringified properly
-        expect( objectStringify( sym )).toBe( 'Symbol(test)' );
+        expect( objectStringify( sym )).toBe( 'Symbol(4:test)' );
     });
 
     test( 'should hash ArrayBuffers, TypedArrays, and Buffers by content value', () =>
@@ -352,7 +352,7 @@ describe( 'object-hash tests', () =>
         expect( objectHash( typed1 )).not.toBe( objectHash( typed3 ));
 
         // Verify stringify representation
-        expect( objectStringify( typed1 )).toBe( 'Uint8Array(1,2,3)' );
+        expect( objectStringify( typed1 )).toBe( 'Uint8Array(3:010203)' );
 
         const arrCollision1 = [ new Uint8Array([ 1 ]), 2 ];
         const arrCollision2 = [ new Uint8Array([ 1, 2 ]) ];
@@ -364,10 +364,10 @@ describe( 'object-hash tests', () =>
 
         // Verify Set, Map, and sorted Array stringify representations
         const setVal = new Set([ 2, 1 ]);
-        expect( objectStringify( setVal )).toBe( 'Set(1,2)' );
+        expect( objectStringify( setVal )).toBe( 'Set{1:1,1:2}' );
 
         const mapVal = new Map([[ 2, 'b' ], [ 1, 'a' ]]);
-        expect( objectStringify( mapVal )).toBe( 'Map(1:"a",2:"b")' );
+        expect( objectStringify( mapVal )).toBe( 'Map{10:1:1=>3:"a",10:1:2=>3:"b"}' );
 
         const arrVal = [ 2, 1 ];
         expect( objectStringify( arrVal, { sortArrays: true } )).toBe( '[1,2]' );
@@ -730,6 +730,220 @@ describe( 'object-hash tests', () =>
         }
     });
 
+    test( 'should prevent delimiter-injection collisions across binary views, Symbols, RegExps, Errors, Sets, and Maps (U3 / AE1 / R1)', () =>
+    {
+        for( const algorithm of [ 'cyrb64', 'murmur3', 'sha256' ] as const )
+        {
+            // AE1: Binary array delimiter injection
+            const binA = [ new Uint8Array( Buffer.from( 'a),Uint8Array(b' )) ];
+            const binB = [ new Uint8Array( Buffer.from( 'a' )), new Uint8Array( Buffer.from( 'b' )) ];
+
+            expect( objectStringify( binA )).not.toBe( objectStringify( binB ));
+            expect( objectHash( binA, { algorithm } )).not.toBe( objectHash( binB, { algorithm } ));
+
+            // Symbol delimiter injection
+            const symA = [ Symbol( 'a),Symbol(b' ) ];
+            const symB = [ Symbol( 'a' ), Symbol( 'b' ) ];
+
+            expect( objectStringify( symA )).not.toBe( objectStringify( symB ));
+            expect( objectHash( symA, { algorithm } )).not.toBe( objectHash( symB, { algorithm } ));
+
+            // Set delimiter injection
+            const setA = new Set([ '3:"a",3:"b"' ]);
+            const setB = new Set([ 'a', 'b' ]);
+
+            expect( objectStringify( setA )).not.toBe( objectStringify( setB ));
+            expect( objectHash( setA, { algorithm } )).not.toBe( objectHash( setB, { algorithm } ));
+
+            // Map delimiter injection
+            const mapA = new Map([[ 'a', 'b",12:3:"c"=>3:"d' ]]);
+            const mapB = new Map([[ 'a', 'b' ], [ 'c', 'd' ]]);
+
+            expect( objectStringify( mapA )).not.toBe( objectStringify( mapB ));
+            expect( objectHash( mapA, { algorithm } )).not.toBe( objectHash( mapB, { algorithm } ));
+
+            // Error delimiter injection
+            const errA = [ new Error( 'a),Error(5:Error,1:b' ) ];
+            const errB = [ new Error( 'a' ), new Error( 'b' ) ];
+
+            expect( objectStringify( errA )).not.toBe( objectStringify( errB ));
+            expect( objectHash( errA, { algorithm } )).not.toBe( objectHash( errB, { algorithm } ));
+
+            // RegExp delimiter injection
+            const regA = [ /a\/,\/b/ ];
+            const regB = [ /a/, /b/ ];
+
+            expect( objectStringify( regA )).not.toBe( objectStringify( regB ));
+            expect( objectHash( regA, { algorithm } )).not.toBe( objectHash( regB, { algorithm } ));
+        }
+    });
+
+    test( 'should serialize binary views identically across sortArrays, Set, Map, and StreamingHash (U3 / AE2 / R2)', () =>
+    {
+        const singleBinArr = [ new Uint8Array([ 1, 2, 3 ]) ];
+
+        for( const algorithm of [ 'cyrb64', 'murmur3', 'sha256' ] as const )
+        {
+            const unsortedHash = objectHash( singleBinArr, { algorithm, sortArrays: false });
+            const sortedHash = objectHash( singleBinArr, { algorithm, sortArrays: true });
+
+            expect( sortedHash ).toBe( unsortedHash );
+        }
+
+        // Offset TypedArray and DataView slice isolation
+        const backing = new Uint8Array([ 9, 1, 2, 3, 9 ]).buffer;
+        const sliceView = new Uint8Array( backing, 1, 3 );
+        const directView = new Uint8Array([ 1, 2, 3 ]);
+        const dataView1 = new DataView( backing, 1, 3 );
+        const dataView2 = new DataView( new Uint8Array([ 1, 2, 3 ]).buffer );
+
+        expect( objectStringify( sliceView )).toBe( 'Uint8Array(3:010203)' );
+        expect( objectHash( sliceView )).toBe( objectHash( directView ));
+        expect( objectStringify( dataView1 )).toBe( 'DataView(3:010203)' );
+        expect( objectHash( dataView1 )).toBe( objectHash( dataView2 ));
+
+        // SharedArrayBuffer content hashing
+        if( typeof SharedArrayBuffer !== 'undefined' )
+        {
+            const sab1 = new SharedArrayBuffer( 3 );
+            const sab2 = new SharedArrayBuffer( 3 );
+            const sab3 = new SharedArrayBuffer( 3 );
+            new Uint8Array( sab1 ).set([ 4, 5, 6 ]);
+            new Uint8Array( sab2 ).set([ 4, 5, 6 ]);
+            new Uint8Array( sab3 ).set([ 4, 5, 7 ]);
+
+            expect( objectStringify( sab1 )).toBe( 'SharedArrayBuffer(3:040506)' );
+            expect( objectHash( sab1 )).toBe( objectHash( sab2 ));
+            expect( objectHash( sab1 )).not.toBe( objectHash( sab3 ));
+        }
+    });
+
+    test( 'should handle Invalid Date, boxed special numbers, boxed BigInt, Error cause, and AggregateError.errors (U3 / R4)', () =>
+    {
+        // Invalid Date
+        const invalidDate1 = new Date( NaN );
+        const invalidDate2 = new Date( 'not-a-date' );
+        expect( () => objectHash( invalidDate1 )).not.toThrow();
+        expect( objectStringify( invalidDate1 )).toBe( 'Date(Invalid Date)' );
+        expect( objectHash( invalidDate1 )).toBe( objectHash( invalidDate2 ));
+        expect( objectHash( invalidDate1 )).not.toBe( objectHash( new Date( 0 )));
+
+        // Boxed NaN, Infinity, -Infinity, -0
+        expect( objectStringify( new Number( NaN ))).toBe( 'NaN' );
+        expect( objectStringify( new Number( Infinity ))).toBe( 'Infinity' );
+        expect( objectStringify( new Number( -Infinity ))).toBe( '-Infinity' );
+        expect( objectStringify( new Number( -0 ))).toBe( objectStringify( -0 ));
+        expect( objectHash( new Number( NaN ))).not.toBe( objectHash( new Number( Infinity )));
+        expect( objectHash( new Number( Infinity ))).not.toBe( objectHash( new Number( -Infinity )));
+        expect( objectHash( new Number( NaN ))).not.toBe( objectHash( null ));
+        expect( objectHash( new Number( NaN ))).not.toBe( objectHash( new Number( 0 )));
+
+        // Boxed BigInt
+        const boxedBig1 = Object( 42n );
+        const boxedBig2 = Object( 42n );
+        const boxedBig3 = Object( 99n );
+        expect( objectStringify( boxedBig1 )).toBe( '42n' );
+        expect( objectHash( boxedBig1 )).toBe( objectHash( boxedBig2 ));
+        expect( objectHash( boxedBig1 )).toBe( objectHash( 42n ));
+        expect( objectHash( boxedBig1 )).not.toBe( objectHash( boxedBig3 ));
+
+        // Error with cause and AggregateError with errors
+        const errWithCause1 = new Error( 'outer', { cause: new Error( 'root1' ) });
+        const errWithCause2 = new Error( 'outer', { cause: new Error( 'root2' ) });
+        expect( objectHash( errWithCause1 )).not.toBe( objectHash( errWithCause2 ));
+        expect( objectStringify( new Error( 'msg', { cause: 'c' } ))).toBe( 'Error(5:Error,3:msg,cause="c")' );
+
+        const agg1 = new AggregateError([ new Error( 'e1' ) ], 'agg' );
+        const agg2 = new AggregateError([ new Error( 'e2' ) ], 'agg' );
+        expect( objectHash( agg1 )).not.toBe( objectHash( agg2 ));
+    });
+
+    test( 'should evaluate options.stringify before built-in handlers and toJSON, and handle self-returning toJSON (U3 / AE4 / R5 / R6)', () =>
+    {
+        // AE4: options.stringify intercepts object with toJSON before toJSON runs
+        let toJSONCalled = false;
+        const item = {
+            id: 'abc',
+            toJSON()
+            {
+                toJSONCalled = true;
+
+                return { id: 'from-toJSON' };
+            }
+        };
+
+        const serialized = objectStringify( item, {
+            stringify: ( v: any ) => ( v && v.id === 'abc' ? 'custom-abc' : undefined )
+        });
+
+        expect( serialized ).toBe( 'custom-abc' );
+        expect( toJSONCalled ).toBe( false );
+
+        // Fallback when options.stringify returns undefined
+        const fallbackSerialized = objectStringify( item, {
+            stringify: () => undefined
+        });
+        expect( fallbackSerialized ).toBe( '{"id":"from-toJSON"}' );
+        expect( toJSONCalled ).toBe( true );
+
+        // Self-returning toJSON (returns this) falls through to property serialization instead of *Circular*
+        const selfToJson: any = { x: 10, y: 20 };
+        Object.defineProperty( selfToJson, 'toJSON', {
+            value()
+            {
+                return this;
+            },
+            enumerable: false
+        });
+
+        expect( objectStringify( selfToJson )).toBe( '{"x":10,"y":20}' );
+    });
+
+    test( 'should sort mixed string and duplicate-description Symbol keys transitively and in linear depth time (U3 / AE5 / R11 / R12)', () =>
+    {
+        // Transitive ordering when mixing string key 'Symbol(dup)' with duplicate Symbol('dup') keys
+        const s1 = Symbol( 'dup' );
+        const s2 = Symbol( 'dup' );
+
+        const mixed1: any = {};
+        mixed1['Symbol(dup)'] = 1;
+        mixed1[s1] = 'z';
+        mixed1[s2] = 'a';
+
+        const mixed2: any = {};
+        mixed2[s1] = 'z';
+        mixed2['Symbol(dup)'] = 1;
+        mixed2[s2] = 'a';
+
+        const mixed3: any = {};
+        mixed3[s2] = 'a';
+        mixed3[s1] = 'z';
+        mixed3['Symbol(dup)'] = 1;
+
+        expect( objectStringify( mixed1 )).toBe( objectStringify( mixed2 ));
+        expect( objectStringify( mixed2 )).toBe( objectStringify( mixed3 ));
+        expect( objectHash( mixed1 )).toBe( objectHash( mixed2 ));
+        expect( objectHash( mixed2 )).toBe( objectHash( mixed3 ));
+
+        // AE5: Depth-25 nested object with duplicate Symbol('dup') keys at every level completes in < 50ms
+        let deepTree: any = { leaf: 'end' };
+
+        for( let i = 0; i < 25; ++i )
+        {
+            deepTree = {
+                [Symbol( 'dup' )]: deepTree,
+                [Symbol( 'dup' )]: i
+            };
+        }
+
+        const start = performance.now();
+        const treeHash = objectHash( deepTree );
+        const elapsed = performance.now() - start;
+
+        expect( typeof treeHash ).toBe( 'string' );
+        expect( elapsed ).toBeLessThan( 50 );
+    });
+
     test( 'should throw an error for unsupported algorithm', () =>
     {
         expect( () => objectHash( {}, { algorithm: 'invalid' as any } )).toThrow( 'Unsupported hashing algorithm: invalid' );
@@ -906,9 +1120,9 @@ describe( 'object-hash tests', () =>
             expect( objectHash( obj1 ) ).toBe( objectHash( obj2 ) );
 
             const stringified = objectStringify( obj1 );
-            expect( stringified ).toContain( 'Symbol(desc1)' );
-            expect( stringified ).toContain( 'Symbol(desc2)' );
-            expect( stringified ).toContain( 'Symbol()' );
+            expect( stringified ).toContain( 'Symbol(5:desc1)' );
+            expect( stringified ).toContain( 'Symbol(5:desc2)' );
+            expect( stringified ).toContain( 'Symbol(0:)' );
         });
 
         test( 'should support native crypto algorithms and throw on unsupported algorithms', () =>
@@ -1082,7 +1296,7 @@ describe( 'object-hash tests', () =>
             const boxedSym1 = Object( Symbol( 'description' ) );
             const boxedSym2 = Object( Symbol( 'description' ) );
 
-            expect( objectStringify( boxedSym1 ) ).toBe( 'Symbol(description)' );
+            expect( objectStringify( boxedSym1 ) ).toBe( 'Symbol(11:description)' );
             expect( objectHash( boxedSym1 ) ).toBe( objectHash( boxedSym2 ) );
         });
 
@@ -1498,31 +1712,31 @@ describe( 'object-hash tests', () =>
                 { name: 'number_inf', val: Infinity, expected: { cyrb64: "0008xvt1wnodtm", murmur3: "0g69gtp0ivxp2q11bv2v20hjx14p", sha256: "1lpwnn116u5ri90fcvkqj10n5bre0w03kst196xnd002xge3h1eohk40" } },
                 { name: 'number_neg_inf', val: -Infinity, expected: { cyrb64: "0004krl19rlchq", murmur3: "0qq6let0eokjfh14by57k0rrsgwg", sha256: "1j0szkh1ge5xeo1utdvq503d81is0o5loer1y13rmx1abr8ki1cjsugp" } },
                 { name: 'bigint', val: 12345678901234567890n, expected: { cyrb64: "1updgie0pssuzl", murmur3: "1089vax0ay9fcb0ygenz315i7pfm", sha256: "1bsatrz1y2ogoi0lhglnv0fxnza40er1y8m1a4ylda0ymv1y9095kmpg" } },
-                { name: 'symbol_desc', val: sym, expected: { cyrb64: "1a0ry5y02ol74x", murmur3: "1x3ojt10trjoti09ommn10j3ucgi", sha256: "14eqxc51cpi4w107uo68i1srd1jz1horjcp1ks7o0a1xscv831pvmweg" } },
-                { name: 'symbol_nodesc', val: symNoDesc, expected: { cyrb64: "06a1dtm0o6es7q", murmur3: "09ht3q20dvi1yq0phv1jk09wc3x3", sha256: "16pjn3f1x6t7zv05s8wdb06t4jw00emrfr11v3ykto0ljbc501d8xxfd" } },
+                { name: 'symbol_desc', val: sym, expected: { cyrb64: "1wj8mdc0cn2epm", murmur3: "1oc5n0q1bwqn0510rrs6b1kwpn01", sha256: "0ihqc4g07dygrp1ua621q0tjak921ql6vld10jjxai0qj2ej81ol4vnc" } },
+                { name: 'symbol_nodesc', val: symNoDesc, expected: { cyrb64: "1984xh00z33j95", murmur3: "0k4mm0p1037f1c1kdg20t0qjozq7", sha256: "0m0fugp0jguj021coxofl049gzfz0zbpqfv1nybml31n5xskw07g0qvx" } },
                 { name: 'plain_object', val: { a: 1, b: 2 }, expected: { cyrb64: "0mfbhsk1k9xxs9", murmur3: "0umekk61053jbe0ro7olf1e5e9nw", sha256: "0impji70xd51c30ue5ybn0hmehnj1iycbp30fksgno12i7v0811s2l4n" } },
                 { name: 'plain_object_alt_order', val: { b: 2, a: 1 }, expected: { cyrb64: "0mfbhsk1k9xxs9", murmur3: "0umekk61053jbe0ro7olf1e5e9nw", sha256: "0impji70xd51c30ue5ybn0hmehnj1iycbp30fksgno12i7v0811s2l4n" } },
                 { name: 'nested_object', val: { x: { y: { z: 3 } } }, expected: { cyrb64: "02za47w0zzd13g", murmur3: "09rhse515097r50qqur4d0nx7dhd", sha256: "1n5qamz0gjjnwj1n73j2o1og2qk01r7kj6o1k4obq210m2u8a162lzuo" } },
                 { name: 'array', val: [3, 2, 1], expected: { cyrb64: "1hjdiu10kau8mf", murmur3: "151nlqp1k24k391e19rep1t9jbj5", sha256: "0dja0in175ejf21u4p6471vm665q0su23zr08394gr10dr37l0m4d759" } },
-                { name: 'set', val: new Set([2, 1]), expected: { cyrb64: "04p6jxz08y0i4r", murmur3: "14kpjyi0g0ch2616jf162139l4hp", sha256: "1mo6r7p0w8haz71d6try90tlut4x0ldsc5v103i36p1p6m1np0nrb0gn" } },
-                { name: 'map', val: new Map([['b', 2], ['a', 1]]), expected: { cyrb64: "0276lyp17sd1ya", murmur3: "1i2q0qs0b9lvq617nupg20mebi5y", sha256: "0m37czj1mttumu0l972o11jny60j0clg0xr0vgij8f11w6g521gxr8eg" } },
+                { name: 'set', val: new Set([2, 1]), expected: { cyrb64: "06cepib1pd2adu", murmur3: "05h6yv91ytpb7s1g6l2hg01je3z8", sha256: "0zzeok5036algt07ssy691ysvukf06meuc81cwkerm0odh3we1bwdvau" } },
+                { name: 'map', val: new Map([['b', 2], ['a', 1]]), expected: { cyrb64: "0n9wbrk0p7ey1k", murmur3: "0860d7v12nlujy0wgbzay17wwkmd", sha256: "12bjm5j0w9yzz10024zzb16u494v1qfho3g0cj988o0rw1cx718uue9m" } },
                 { name: 'boxed_string', val: new String("boxed"), expected: { cyrb64: "1sitr570hwmpi4", murmur3: "1v8b7jr1qsz9f4194jhdj0xcbkph", sha256: "0m10n690scutva1tn9nxk15xlrva015732r0b2vwnz1vt73zl0fddftn" } },
                 { name: 'boxed_number', val: new Number(123), expected: { cyrb64: "19weemc1hspbnf", murmur3: "0u71aip0xjk9zo08828350jph2l3", sha256: "1a63dcp08y7z4t0i66zqf1ujwf5k18h35fj1yscvwe16lu2uv1wpjxsz" } },
                 { name: 'boxed_boolean', val: new Boolean(true), expected: { cyrb64: "0vy7m1w0dany9w", murmur3: "0sw0mpr15aaslg0qur09d15vgwix", sha256: "1efeal70u2m5j002rbx2c1p8bkkr1biex251455d2j1ig29pw0k38oiz" } },
-                { name: 'boxed_symbol', val: Object(Symbol("boxed-symbol")), expected: { cyrb64: "1dlqvhe00mwpa2", murmur3: "177w83f1rpolw31e0bjau015keji", sha256: "0ted84n1d1xc9m00qxn20045sx5b0csvaxx0zt42680jk6nyg1lnhy5u" } },
+                { name: 'boxed_symbol', val: Object(Symbol("boxed-symbol")), expected: { cyrb64: "023mmtq17fcw61", murmur3: "1wbqc620gsd91s07gvlbq15fe5e1", sha256: "1nip8lt0l06ljp1h432cs0yawejc0wq3pp01uk0zu61lyzsmp0rasqhr" } },
                 { name: 'date', val: new Date("2026-07-20T07:20:00.000Z"), expected: { cyrb64: "0e3j8gr1v4nvni", murmur3: "0ffx0h5143jwkv1211gp413yt27s", sha256: "0o8zn8m1b6hb5a19m4xlb074nvlz0hqp0980kik5en182obkh018yr22" } },
-                { name: 'regexp', val: /abc/gi, expected: { cyrb64: "0p08otz1mo0mmt", murmur3: "0a5aze814v5eud0henjxn0ifglgg", sha256: "04fybqt1o6h8ze07p0fdu0yxslsy1yrtxkr0b3qxqh06854rp1o8v5ee" } },
-                { name: 'error', val: new Error("error message"), expected: { cyrb64: "00kv7wp14b2tse", murmur3: "0ymqq9l0cqb2ao1xvllh40qfawxy", sha256: "0i4g03m1gbr9e80j45mwg18h3o6w0gbno7f0n2voh60x7zvkx06h97ep" } },
+                { name: 'regexp', val: /abc/gi, expected: { cyrb64: "1t2t0yk1p4eyld", murmur3: "01nlqqr02d98im16zt7y40oxcrud", sha256: "1lppco00pu1pck1dxv33r09v528v0kjr6m70gj21e21g4q7u41bnkxwi" } },
+                { name: 'error', val: new Error("error message"), expected: { cyrb64: "0n277jc1ww3946", murmur3: "0d288qk0k521zw1v2g1o510b9m7a", sha256: "1rvesbz1xr3f5z03lkiui09pht861pr8w1n1a51ig31knrvg510k7rtq" } },
                 { name: 'url', val: new URL("https://example.com/foo"), expected: { cyrb64: "0ucgoaj1sd3uxf", murmur3: "0fo5ly71nhbaj60gdqi131idaimp", sha256: "07qio3h03f3du81ekp3qw1t2go5e10n83960wqq43j1mi160r1d8bbcw" } },
                 { name: 'url_search_params', val: new URLSearchParams("x=1&y=2"), expected: { cyrb64: "00ps6tb0525c3a", murmur3: "0uarccw02r55og0fqek141nwx7ym", sha256: "11iqdif0v3r7li0nl3jby1tfypg90st11su1czoos20ackwgo1tvgms3" } },
                 { name: 'to_json_object', val: objWithToJSON, expected: { cyrb64: "12tqpro0r475iu", murmur3: "0wmse800j0gyi20xw58ea1l3g4gw", sha256: "04a4b9v1a9cf8h0ylmb840me0eit102w1mf00jtqz90z7dby60byaqlt" } },
                 { name: 'to_json_class', val: new CustomClassWithToJSON(), expected: { cyrb64: "1unra0p1b5ffmb", murmur3: "0t0bu2n0mk3lqf08305pa04ds5uo", sha256: "14kw3n01nj8uzi087mi9y1y1lx631wmfs9513hgra715dqq650nwzw26" } },
-                { name: 'uint8array', val: new Uint8Array([1, 2, 3]), expected: { cyrb64: "15jjg7k0gq55kl", murmur3: "0u9r3w8075qcj81ievsi30abwvbk", sha256: "1rohx7910zm35y1klte7s16ggn0l0830uvh1ega6wt0ljts3a18oe338" } },
-                { name: 'duplicate_symbols', val: { [symSame2]: 'v2', [symSame1]: 'v1' }, expected: { cyrb64: "0y8a6k21o771vc", murmur3: "17qoa531e2e5g31fykvef12oy212", sha256: "1q48ef000mxopz1hv9ix50jjm1oc1qvf04j0saib3e1s5w4mf08or37k" } },
+                { name: 'uint8array', val: new Uint8Array([1, 2, 3]), expected: { cyrb64: "0chs6mv08vlfn2", murmur3: "0rb7vw10uyzgzi0qrm9kt0cdyoik", sha256: "0ttzmly0orz0ct0utn1qk1xiv4gf0neladp0yqkcqf0kduzt60gn4tb6" } },
+                { name: 'duplicate_symbols', val: { [symSame2]: 'v2', [symSame1]: 'v1' }, expected: { cyrb64: "19b12fb1jvcxgo", murmur3: "0w6z5v81nymbxl1icxhbg1nde65l", sha256: "0b7e5241g13bh016g1kd00nuwghe1oep5lo0pv6p851ojeeug0s3rwxp" } },
                 { name: 'nested_array_of_objects', val: [ { a: 1, b: [ 2, 3 ] }, { c: { d: 4 } } ], expected: { cyrb64: "1keegjg11a9l5a", murmur3: "0016j2n1yyrdcp092dz9y1u48gvm", sha256: "0ncebj90cwa2t20ndzptk0iihs9r0ww7jfl1gdhuyi1j9z7w2194vaa1" } },
-                { name: 'deep_mixed_structure', val: { a: [ { x: 1 } ], b: new Map([ [ 'key', { nested: [ 1, 2 ] } ] ]) }, expected: { cyrb64: "1ute4ow0y1lguw", murmur3: "1wdy03w13sw9y21yf16881367ujq", sha256: "0ijbenb06qi5fp1noc5541tu1ma8161wen41bnpyfv0gdbunu1py4i5t" } },
+                { name: 'deep_mixed_structure', val: { a: [ { x: 1 } ], b: new Map([ [ 'key', { nested: [ 1, 2 ] } ] ]) }, expected: { cyrb64: "10joepe0qq1feg", murmur3: "1577j2t0awp89k0rxs7x61r0umbi", sha256: "1pzwh330lxo62n1pp49u00fjtkyf18rqvqf0lr42wp0ihcrjm0emhhfn" } },
                 { name: 'complex_nested_json', val: { user: { id: 123, profile: { name: 'John', tags: ['admin', 'user'] } }, meta: { status: 'active' } }, expected: { cyrb64: "1n7wmzj1v0q51v", murmur3: "08ziee20gk8izo06xvlbs0fa04uk", sha256: "0j9iq3x1r9y48z0yyzclf1bgqbvq1cwwel60y4fu5o0u5nf9z1rigban" } },
-                { name: 'array_of_mixed_types', val: [ 1, 'text', { obj: true }, [ 1, 2 ], new Set([3, 4]) ], expected: { cyrb64: "1qlzrt502exq9n", murmur3: "0gp46k40uhy4gy0m8zbp21oai5vb", sha256: "0t02bvu1cqq0uy1yismyv1bsp21k1om4ux504i829u0ylx80s0bb1pwk" } }
+                { name: 'array_of_mixed_types', val: [ 1, 'text', { obj: true }, [ 1, 2 ], new Set([3, 4]) ], expected: { cyrb64: "00f0f32005h4iz", murmur3: "0rnj6he13i5k200ol47ad105yujj", sha256: "13821m500hxcjs12si5gk02dc5q21hy20gk0psxtjv1td4ztm06ey5nx" } }
             ];
 
             for( const c of cases )

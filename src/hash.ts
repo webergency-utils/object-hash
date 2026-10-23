@@ -3,6 +3,7 @@ import MurmurHash3 from './alg/murmur3';
 import Sha256Hash from './alg/sha256';
 import 
 { 
+    bytesToHex,
     encodeBytes, 
     validateBitLength, 
     validateEncoding, 
@@ -17,28 +18,16 @@ const UTF8_ENCODER = new TextEncoder();
 
 function getNodeCrypto(): any
 {
-    try
-    {
-        return ( globalThis as any ).process?.getBuiltinModule?.( 'crypto' );
-    }
-    catch( _ )
-    {
-        return undefined;
-    }
+    return ( globalThis as any ).process?.getBuiltinModule?.( 'crypto' );
 }
 
-class StringAccumulator
+class StringAccumulator implements Accumulator
 {
     #chunks: string[] = [];
 
     update( str: string )
     {
         this.#chunks.push( str );
-    }
-
-    updateBytes( bytes: Uint8Array )
-    {
-        this.#chunks.push( bytes.toString() );
     }
 
     toString(): string
@@ -52,7 +41,7 @@ class StringAccumulator
 export interface Accumulator
 {
     update( str: string ): void
-    updateBytes( bytes: Uint8Array ): void
+    updateBytes?( bytes: Uint8Array ): void
 }
 
 export interface CustomHasher
@@ -84,18 +73,6 @@ class HasherAdapter implements Accumulator
     update( str: string )
     {
         this.#hasher.update( str );
-    }
-
-    updateBytes( bytes: Uint8Array )
-    {
-        if( typeof this.#hasher.updateBytes === 'function' )
-        {
-            this.#hasher.updateBytes( bytes );
-        }
-        else
-        {
-            this.#hasher.update( bytes );
-        }
     }
 
     digest( raw: boolean = false ): Uint8Array | string
@@ -304,24 +281,6 @@ function getIndexHash( val: Function | object ): string
     return HashIndex.get( val )!;
 }
 
-function getEnumerableKeys( obj: any ): (string | symbol)[]
-{
-    const keys: (string | symbol)[] = Object.keys( obj );
-    const symbols = Object.getOwnPropertySymbols( obj );
-
-    for( let i = 0; i < symbols.length; ++i )
-    {
-        const sym = symbols[i];
-
-        if( Object.prototype.propertyIsEnumerable.call( obj, sym ))
-        {
-            keys.push( sym );
-        }
-    }
-
-    return keys;
-}
-
 type BaseOptions = {
     sortArrays                  : boolean
     ignoreUndefinedProperties   : boolean
@@ -345,7 +304,45 @@ type HasherOptions = BaseOptions & {
 
 export type ObjectStringifyOptions = AlgorithmOptions | HasherOptions;
 
-function _objectStringify( obj: any, visited: Set<any>, options: ObjectStringifyOptions, hasher: Accumulator ): void
+interface NormalizedStringifyOptions
+{
+    sortArrays                  : boolean
+    ignoreUndefinedProperties   : boolean
+    stringify?                  : ( obj: any ) => string | undefined
+    excludeKeysSet?             : Set<string | symbol>
+    includeKeysSet?             : Set<string | symbol>
+    excludeValues?              : boolean
+}
+
+function normalizeStringifyOptions( options: Partial<ObjectStringifyOptions> ): NormalizedStringifyOptions
+{
+    const {
+        sortArrays = false,
+        ignoreUndefinedProperties = true,
+        stringify,
+        excludeKeys,
+        includeKeys,
+        excludeValues
+    } = options;
+
+    return {
+        sortArrays,
+        ignoreUndefinedProperties,
+        stringify,
+        excludeKeysSet: excludeKeys ? new Set( excludeKeys ) : undefined,
+        includeKeysSet: includeKeys ? new Set( includeKeys ) : undefined,
+        excludeValues
+    };
+}
+
+function formatSymbolToken( sym: symbol ): string
+{
+    const desc = sym.description ?? '';
+
+    return `Symbol(${ desc.length }:${ desc })`;
+}
+
+function _objectStringify( obj: any, visited: Set<any>, options: NormalizedStringifyOptions, hasher: Accumulator ): void
 {
     if( typeof obj === 'undefined' )
     {
@@ -356,7 +353,7 @@ function _objectStringify( obj: any, visited: Set<any>, options: ObjectStringify
 
     if( typeof obj === 'symbol' )
     {
-        hasher.update( 'Symbol(' + ( obj.description || '' ) + ')' );
+        hasher.update( formatSymbolToken( obj ));
 
         return;
     }
@@ -406,27 +403,60 @@ function _objectStringify( obj: any, visited: Set<any>, options: ObjectStringify
         return;
     }
 
+    if( options.stringify )
+    {
+        const str = options.stringify( obj );
+
+        if( str !== undefined )
+        {
+            hasher.update( str );
+
+            return;
+        }
+    }
+
     visited.add( obj );
 
     try
     {
         if( obj instanceof Date )
         {
-            hasher.update( obj.toISOString());
+            const time = obj.getTime();
+
+            hasher.update( Number.isNaN( time ) ? 'Date(Invalid Date)' : obj.toISOString());
 
             return;
         }
 
         if( obj instanceof RegExp )
         {
-            hasher.update( obj.toString());
+            hasher.update( `RegExp(${ obj.source.length }:${ obj.source },${ obj.flags })` );
 
             return;
         }
 
         if( obj instanceof Error )
         {
-            hasher.update( obj.name + ': ' + obj.message );
+            const name = obj.name || 'Error';
+            const msg = obj.message || '';
+            let out = `Error(${ name.length }:${ name },${ msg.length }:${ msg }`;
+
+            if( 'cause' in obj && ( obj as any ).cause !== undefined )
+            {
+                const causeAcc = new StringAccumulator();
+                _objectStringify(( obj as any ).cause, visited, options, causeAcc );
+                out += `,cause=${ causeAcc.toString() }`;
+            }
+
+            if( Array.isArray(( obj as any ).errors ))
+            {
+                const errAcc = new StringAccumulator();
+                _objectStringify(( obj as any ).errors, visited, options, errAcc );
+                out += `,errors=${ errAcc.toString() }`;
+            }
+
+            out += ')';
+            hasher.update( out );
 
             return;
         }
@@ -445,31 +475,32 @@ function _objectStringify( obj: any, visited: Set<any>, options: ObjectStringify
             return;
         }
 
-        if( obj instanceof String || obj instanceof Number || obj instanceof Boolean )
+        if(
+            obj instanceof String ||
+            obj instanceof Number ||
+            obj instanceof Boolean ||
+            ( typeof Symbol !== 'undefined' && obj instanceof Symbol ) ||
+            ( typeof BigInt !== 'undefined' && obj instanceof BigInt )
+        )
         {
-            hasher.update( JSON.stringify( obj.valueOf() ));
+            _objectStringify( obj.valueOf(), visited, options, hasher );
 
             return;
         }
 
-        if( typeof Symbol !== 'undefined' && obj instanceof Symbol )
+        const isSharedBuf = typeof SharedArrayBuffer !== 'undefined' && obj instanceof SharedArrayBuffer;
+
+        if( obj instanceof ArrayBuffer || isSharedBuf || ArrayBuffer.isView( obj ))
         {
-            hasher.update( 'Symbol(' + ( obj.valueOf().description || '' ) + ')' );
+            const view = ArrayBuffer.isView( obj )
+                ? new Uint8Array( obj.buffer, obj.byteOffset, obj.byteLength )
+                : new Uint8Array( obj as ArrayBuffer );
 
-            return;
-        }
+            const typeName = obj instanceof ArrayBuffer
+                ? 'ArrayBuffer'
+                : ( isSharedBuf ? 'SharedArrayBuffer' : ( obj.constructor?.name || 'ArrayBufferView' ));
 
-        if( obj instanceof ArrayBuffer || ArrayBuffer.isView( obj ))
-        {
-            const view = obj instanceof ArrayBuffer
-                ? new Uint8Array( obj )
-                : new Uint8Array( obj.buffer, obj.byteOffset, obj.byteLength );
-
-            const typeName = obj instanceof ArrayBuffer ? 'ArrayBuffer' : obj.constructor.name;
-
-            hasher.update( typeName + '(' );
-            hasher.updateBytes( view );
-            hasher.update( ')' );
+            hasher.update( `${ typeName }(${ view.byteLength }:${ bytesToHex( view ) })` );
 
             return;
         }
@@ -486,14 +517,17 @@ function _objectStringify( obj: any, visited: Set<any>, options: ObjectStringify
             });
 
             items.sort();
-            hasher.update( 'Set(' + items.join( ',' ) + ')' );
+
+            const framed = items.map( item => `${ item.length }:${ item }` );
+
+            hasher.update( 'Set{' + framed.join( ',' ) + '}' );
 
             return;
         }
 
         if( obj instanceof Map )
         {
-            const entries = [...obj.entries()].map( ([ key, value ]) =>
+            const entries = [...obj.entries()].map(([ key, value ]) =>
             {
                 const keyAccumulator = new StringAccumulator();
                 _objectStringify( key, visited, options, keyAccumulator );
@@ -501,11 +535,17 @@ function _objectStringify( obj: any, visited: Set<any>, options: ObjectStringify
                 const valAccumulator = new StringAccumulator();
                 _objectStringify( value, visited, options, valAccumulator );
 
-                return `${ keyAccumulator.toString() }:${ valAccumulator.toString() }`;
+                const kStr = keyAccumulator.toString();
+                const vStr = valAccumulator.toString();
+
+                return `${ kStr.length }:${ kStr }=>${ vStr.length }:${ vStr }`;
             });
 
             entries.sort();
-            hasher.update( 'Map(' + entries.join( ',' ) + ')' );
+
+            const framed = entries.map( entry => `${ entry.length }:${ entry }` );
+
+            hasher.update( 'Map{' + framed.join( ',' ) + '}' );
 
             return;
         }
@@ -542,18 +582,11 @@ function _objectStringify( obj: any, visited: Set<any>, options: ObjectStringify
 
         if( typeof obj.toJSON === 'function' )
         {
-            _objectStringify( obj.toJSON(), visited, options, hasher );
+            const replacement = obj.toJSON();
 
-            return;
-        }
-
-        if( options.stringify )
-        {
-            const str = options.stringify( obj );
-
-            if( str !== undefined )
+            if( replacement !== obj )
             {
-                hasher.update( str );
+                _objectStringify( replacement, visited, options, hasher );
 
                 return;
             }
@@ -598,70 +631,142 @@ function _objectStringify( obj: any, visited: Set<any>, options: ObjectStringify
             return;
         }
 
-        const keys = getEnumerableKeys( obj );
+        let strKeys = Object.keys( obj );
 
-        const sortedKeys = keys.sort(( a, b ) =>
+        if( options.includeKeysSet )
         {
-            if( a === b ){ return 0 }
+            strKeys = strKeys.filter( k => options.includeKeysSet!.has( k ));
+        }
+        else if( options.excludeKeysSet )
+        {
+            strKeys = strKeys.filter( k => !options.excludeKeysSet!.has( k ));
+        }
 
-            const aStr = typeof a === 'symbol' ? 'Symbol(' + ( a.description || '' ) + ')' : a;
-            const bStr = typeof b === 'symbol' ? 'Symbol(' + ( b.description || '' ) + ')' : b;
+        strKeys.sort();
 
-            if( aStr === bStr )
+        const rawSymbols = Object.getOwnPropertySymbols( obj );
+        const symKeys: symbol[] = [];
+
+        for( let i = 0; i < rawSymbols.length; ++i )
+        {
+            const sym = rawSymbols[i];
+
+            if( !Object.prototype.propertyIsEnumerable.call( obj, sym )){ continue }
+
+            if( options.includeKeysSet )
             {
-                if( typeof a === 'symbol' && typeof b === 'symbol' )
+                if( !options.includeKeysSet.has( sym )){ continue }
+            }
+            else if( options.excludeKeysSet && options.excludeKeysSet.has( sym )){ continue }
+
+            symKeys.push( sym );
+        }
+
+        let dupSymValues: Map<symbol, string> | undefined;
+
+        if( symKeys.length > 1 )
+        {
+            const descCounts = new Map<string, number>();
+
+            for( let i = 0; i < symKeys.length; ++i )
+            {
+                const desc = symKeys[i].description ?? '';
+                descCounts.set( desc, ( descCounts.get( desc ) ?? 0 ) + 1 );
+            }
+
+            dupSymValues = new Map<symbol, string>();
+            const sameRefValues = new Map<any, string>();
+
+            for( let i = 0; i < symKeys.length; ++i )
+            {
+                const sym = symKeys[i];
+                const desc = sym.description ?? '';
+
+                if(( descCounts.get( desc ) ?? 0 ) > 1 )
                 {
-                    const aValAccumulator = new StringAccumulator();
-                    _objectStringify( obj[a], new Set( visited ), options, aValAccumulator );
+                    const symVal = obj[sym];
 
-                    const bValAccumulator = new StringAccumulator();
-                    _objectStringify( obj[b], new Set( visited ), options, bValAccumulator );
-
-                    const aValStr = aValAccumulator.toString();
-                    const bValStr = bValAccumulator.toString();
-
-                    if( aValStr !== bValStr )
+                    if( sameRefValues.has( symVal ))
                     {
-                        return aValStr > bValStr ? 1 : -1;
+                        dupSymValues.set( sym, sameRefValues.get( symVal )! );
                     }
+                    else
+                    {
+                        const valAcc = new StringAccumulator();
+                        _objectStringify( symVal, visited, options, valAcc );
+                        const serializedVal = valAcc.toString();
+                        sameRefValues.set( symVal, serializedVal );
+                        dupSymValues.set( sym, serializedVal );
+                    }
+                }
+            }
+
+            symKeys.sort(( a, b ) =>
+            {
+                const aDesc = a.description ?? '';
+                const bDesc = b.description ?? '';
+
+                if( aDesc !== bDesc )
+                {
+                    return aDesc > bDesc ? 1 : -1;
+                }
+
+                const aVal = dupSymValues!.get( a )!;
+                const bVal = dupSymValues!.get( b )!;
+
+                if( aVal !== bVal )
+                {
+                    return aVal > bVal ? 1 : -1;
                 }
 
                 return 0;
-            }
-
-            return aStr > bStr ? 1 : -1;
-        });
+            });
+        }
 
         hasher.update( '{' );
 
         let hasWritten = false;
 
-        for( let i = 0; i < sortedKeys.length; ++i )
+        for( let i = 0; i < strKeys.length; ++i )
         {
-            const key = sortedKeys[i];
-
-            if( typeof key === 'string' )
-            {
-                if( options.includeKeys )
-                {
-                    if( !options.includeKeys.includes( key )){ continue }
-                }
-                else if( options.excludeKeys && options.excludeKeys.includes( key )){ continue }
-            }
-
+            const key = strKeys[i];
             const val = obj[key];
 
             if( options.ignoreUndefinedProperties && val === undefined ){ continue }
 
             if( hasWritten ){ hasher.update( ',' ) }
 
-            const kStr = typeof key === 'symbol' ? 'Symbol(' + ( key.description || '' ) + ')' : JSON.stringify( key );
-
-            hasher.update( kStr + ':' );
+            hasher.update( JSON.stringify( key ) + ':' );
 
             if( !options.excludeValues )
             {
                 _objectStringify( val, visited, options, hasher );
+            }
+
+            hasWritten = true;
+        }
+
+        for( let i = 0; i < symKeys.length; ++i )
+        {
+            const sym = symKeys[i];
+            const val = obj[sym];
+
+            if( options.ignoreUndefinedProperties && val === undefined ){ continue }
+
+            if( hasWritten ){ hasher.update( ',' ) }
+
+            hasher.update( formatSymbolToken( sym ) + ':' );
+
+            if( !options.excludeValues )
+            {
+                if( dupSymValues && dupSymValues.has( sym ))
+                {
+                    hasher.update( dupSymValues.get( sym )! );
+                }
+                else
+                {
+                    _objectStringify( val, visited, options, hasher );
+                }
             }
 
             hasWritten = true;
@@ -688,30 +793,27 @@ function resolveAlgorithm( alg?: 'cyrb64' | 'murmur3' | 'sha256' | 'fast' | 'bal
 
 export function objectStringify( obj: any, options: Partial<ObjectStringifyOptions> = {} ): string
 {
-    const { sortArrays = false, ignoreUndefinedProperties = true, stringify, excludeKeys, includeKeys, excludeValues } = options;
     const accumulator = new StringAccumulator();
 
-    _objectStringify( obj, new Set(), { sortArrays, ignoreUndefinedProperties, stringify, excludeKeys, includeKeys, excludeValues } as any, accumulator );
+    _objectStringify( obj, new Set(), normalizeStringifyOptions( options ), accumulator );
 
     return accumulator.toString();
 }
 
 export default function objectHash( obj: any, options: Partial<ObjectStringifyOptions> = {} ): string
 {
-    const { sortArrays = false, ignoreUndefinedProperties = true, stringify, excludeKeys, includeKeys, excludeValues } = options;
     const { hasher: mainHasher, encoding } = createConfiguredHasher( options );
 
-    _objectStringify( obj, new Set(), { sortArrays, ignoreUndefinedProperties, stringify, excludeKeys, includeKeys, excludeValues } as any, mainHasher );
+    _objectStringify( obj, new Set(), normalizeStringifyOptions( options ), mainHasher );
 
     return digestToString( mainHasher, encoding );
 }
 
 export function objectHashBytes( obj: any, options: Partial<ObjectStringifyOptions> = {} ): Uint8Array
 {
-    const { sortArrays = false, ignoreUndefinedProperties = true, stringify, excludeKeys, includeKeys, excludeValues } = options;
     const { hasher: mainHasher } = createConfiguredHasher( options );
 
-    _objectStringify( obj, new Set(), { sortArrays, ignoreUndefinedProperties, stringify, excludeKeys, includeKeys, excludeValues } as any, mainHasher );
+    _objectStringify( obj, new Set(), normalizeStringifyOptions( options ), mainHasher );
 
     return mainHasher.digest( true ) as Uint8Array;
 }
@@ -758,10 +860,9 @@ export class StreamingHash
 
     update( obj: any ): this
     {
-        const { sortArrays = false, ignoreUndefinedProperties = true, stringify, excludeKeys, includeKeys, excludeValues } = this.#options;
         const chunkAccumulator = new StringAccumulator();
 
-        _objectStringify( obj, new Set(), { sortArrays, ignoreUndefinedProperties, stringify, excludeKeys, includeKeys, excludeValues } as any, chunkAccumulator );
+        _objectStringify( obj, new Set(), normalizeStringifyOptions( this.#options ), chunkAccumulator );
 
         const chunk = chunkAccumulator.toString();
 
