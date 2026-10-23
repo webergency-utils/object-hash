@@ -164,7 +164,7 @@ export function bytesToBase64Url( bytes: Uint8Array ): string
 export type BitLength = 64 | 96 | 128 | 192 | 256;
 export type Encoding = 'hex' | 'base36' | 'base62' | 'base64' | 'base64url';
 
-export function validateBitLength( bitLength: any ): asserts bitLength is BitLength
+export function validateBitLength( bitLength: unknown ): asserts bitLength is BitLength
 {
     if( bitLength !== 64 && bitLength !== 96 && bitLength !== 128 && bitLength !== 192 && bitLength !== 256 )
     {
@@ -172,7 +172,7 @@ export function validateBitLength( bitLength: any ): asserts bitLength is BitLen
     }
 }
 
-export function validateEncoding( encoding: any ): asserts encoding is Encoding
+export function validateEncoding( encoding: unknown ): asserts encoding is Encoding
 {
     if( encoding !== 'hex' && encoding !== 'base36' && encoding !== 'base62' && encoding !== 'base64' && encoding !== 'base64url' )
     {

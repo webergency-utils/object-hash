@@ -30,6 +30,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Build
+        run: npx tsup
+
       - name: Run tests with coverage
         run: npm run coverage
 

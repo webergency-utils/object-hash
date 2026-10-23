@@ -12,7 +12,7 @@ import
 } 
 from './alg/base';
 
-export { Cyrb64Hash, MurmurHash3, Sha256Hash };
+export { Cyrb64Hash, MurmurHash3, Sha256Hash, type BitLength, type Encoding };
 
 const UTF8_ENCODER = new TextEncoder();
 
@@ -46,9 +46,9 @@ export interface Accumulator
 
 export interface CustomHasher
 {
-    update( data: any )             : unknown
+    update( data: any )              : unknown
     updateBytes?( bytes: Uint8Array ): unknown
-    digest( encoding?: any )        : string | Uint8Array
+    digest( encoding?: any )         : Uint8Array | ArrayBuffer | ArrayBufferView | number[] | string
 }
 
 export type Algorithm = 'cyrb64' | 'murmur3' | 'sha256' | 'fast' | 'balanced' | 'strong';
@@ -80,7 +80,20 @@ class HasherAdapter implements Accumulator
         const target = typeof this.#hasher.copy === 'function'
             ? this.#hasher.copy()
             : this.#hasher;
-        const val = target.digest();
+        let val = target.digest();
+
+        if( val instanceof ArrayBuffer || ( typeof SharedArrayBuffer !== 'undefined' && val instanceof SharedArrayBuffer ))
+        {
+            val = new Uint8Array( val );
+        }
+        else if( ArrayBuffer.isView( val ) && !( val instanceof Uint8Array ))
+        {
+            val = new Uint8Array( val.buffer, val.byteOffset, val.byteLength );
+        }
+        else if( Array.isArray( val ))
+        {
+            val = Uint8Array.from( val );
+        }
 
         if( val instanceof Uint8Array )
         {
@@ -163,21 +176,20 @@ function createHasher( opt: any, bitLength?: BitLength ): HasherAdapter
 
     if( typeof opt === 'function' )
     {
-        const b = bitLength ?? 64;
         let instance: any;
 
         try
         {
-            instance = opt( b );
+            instance = bitLength !== undefined ? opt( bitLength ) : opt();
 
             if( instance === undefined )
             {
-                instance = new opt( b );
+                instance = bitLength !== undefined ? new opt( bitLength ) : new opt();
             }
         }
         catch( _ )
         {
-            instance = new opt( b );
+            instance = bitLength !== undefined ? new opt( bitLength ) : new opt();
         }
 
         return new HasherAdapter( instance, bitLength ? bitLength / 8 : undefined );
@@ -642,6 +654,8 @@ function _objectStringify( obj: any, visited: Set<any>, options: NormalizedStrin
             }
             else if( options.excludeKeysSet && options.excludeKeysSet.has( sym )){ continue }
 
+            if( options.ignoreUndefinedProperties && obj[sym] === undefined ){ continue }
+
             symKeys.push( sym );
         }
 
@@ -657,7 +671,7 @@ function _objectStringify( obj: any, visited: Set<any>, options: NormalizedStrin
                 descCounts.set( desc, ( descCounts.get( desc ) ?? 0 ) + 1 );
             }
 
-            if( descCounts.size < symKeys.length )
+            if( !options.excludeValues && descCounts.size < symKeys.length )
             {
                 dupSymValues = new Map<symbol, string>();
                 const sameRefValues = new Map<any, string>();
@@ -697,12 +711,15 @@ function _objectStringify( obj: any, visited: Set<any>, options: NormalizedStrin
                     return aDesc > bDesc ? 1 : -1;
                 }
 
-                const aVal = dupSymValues!.get( a )!;
-                const bVal = dupSymValues!.get( b )!;
-
-                if( aVal !== bVal )
+                if( dupSymValues )
                 {
-                    return aVal > bVal ? 1 : -1;
+                    const aVal = dupSymValues.get( a )!;
+                    const bVal = dupSymValues.get( b )!;
+
+                    if( aVal !== bVal )
+                    {
+                        return aVal > bVal ? 1 : -1;
+                    }
                 }
 
                 return 0;

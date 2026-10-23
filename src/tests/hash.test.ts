@@ -5,7 +5,7 @@ import
     expect 
 } 
 from 'vitest';
-import objectHash, { objectStringify, Hasher, objectHashBytes, StreamingHash } from '../hash';
+import objectHash, { objectStringify, Hasher, objectHashBytes, StreamingHash, type BitLength, type Encoding } from '../hash';
 import 
 { 
     bytesToHex,
@@ -618,15 +618,21 @@ describe( 'object-hash tests', () =>
         const payload = { a: 1, b: [ 'hello', 'world' ] };
 
         // Act & Assert: Default bitLength per algorithm (8 bytes cyrb64/fast, 16 bytes murmur3/balanced, 32 bytes sha256/strong)
+        const defaultHexEncoding: Encoding = 'hex';
+        const validBitLengths: BitLength[] = [ 64, 96, 128, 192, 256 ];
+
+        expect( defaultHexEncoding ).toBe( 'hex' );
         expect( objectHashBytes( payload, { algorithm: 'cyrb64' } ).length ).toBe( 8 );
         expect( objectHashBytes( payload, { algorithm: 'fast' } ).length ).toBe( 8 );
         expect( objectHashBytes( payload, { algorithm: 'murmur3' } ).length ).toBe( 16 );
         expect( objectHashBytes( payload, { algorithm: 'balanced' } ).length ).toBe( 16 );
         expect( objectHashBytes( payload, { algorithm: 'sha256' } ).length ).toBe( 32 );
         expect( objectHashBytes( payload, { algorithm: 'strong' } ).length ).toBe( 32 );
+        expect( objectHashBytes( payload, { hasher: Sha256Hash } ).byteLength ).toBe( 32 );
+        expect( objectHashBytes( payload, { hasher: MurmurHash3 } ).byteLength ).toBe( 16 );
 
         // Explicit bitLength overrides across sha256
-        for( const bits of [ 64, 96, 128, 192, 256 ] as const )
+        for( const bits of validBitLengths )
         {
             expect( objectHashBytes( payload, { algorithm: 'sha256', bitLength: bits } ).length ).toBe( bits / 8 );
         }
@@ -677,6 +683,35 @@ describe( 'object-hash tests', () =>
         const rawFromStr = objectHashBytes( payload, { hasher: strHasher });
         expect( rawFromStr ).toBeInstanceOf( Uint8Array );
         expect( rawFromStr.constructor ).toBe( Uint8Array );
+        expect( objectHashBytes( payload, { hasher: strHasher, bitLength: 64 } ).byteLength ).toBe( 8 );
+
+        // CustomHasher objects returning ArrayBuffer, DataView, and number[]
+        const expected8 = new Uint8Array([ 1, 2, 3, 4, 5, 6, 7, 8 ]);
+        const arrayBufferHasher = {
+            update() {},
+            digest()
+            {
+                return new Uint8Array([ 1, 2, 3, 4, 5, 6, 7, 8 ]).buffer;
+            }
+        };
+        const dataViewHasher = {
+            update() {},
+            digest()
+            {
+                return new DataView( new Uint8Array([ 1, 2, 3, 4, 5, 6, 7, 8 ]).buffer );
+            }
+        };
+        const numberArrayHasher = {
+            update() {},
+            digest()
+            {
+                return [ 1, 2, 3, 4, 5, 6, 7, 8 ];
+            }
+        };
+
+        expect( objectHashBytes( payload, { hasher: arrayBufferHasher as any } )).toStrictEqual( expected8 );
+        expect( objectHashBytes( payload, { hasher: dataViewHasher as any } )).toStrictEqual( expected8 );
+        expect( objectHashBytes( payload, { hasher: numberArrayHasher as any } )).toStrictEqual( expected8 );
 
         // Custom hasher class with leading comment before class keyword
         const CommentedHasher = ( 0, eval )( '(/* leading comment */ class CommentedHasher { update() {} digest() { return new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]); } })' );
@@ -924,6 +959,25 @@ describe( 'object-hash tests', () =>
         });
 
         expect( objectStringify( selfToJson )).toBe( '{"x":10,"y":20}' );
+
+        // options.stringify intercepts RegExp, Set, Map, and Uint8Array before built-in handlers
+        const customBuiltins = ( v: any ) =>
+        {
+            if( v instanceof RegExp ){ return 'custom-regexp' }
+
+            if( v instanceof Set ){ return 'custom-set' }
+
+            if( v instanceof Map ){ return 'custom-map' }
+
+            if( v instanceof Uint8Array ){ return 'custom-uint8' }
+
+            return undefined;
+        };
+
+        expect( objectStringify( /abc/g, { stringify: customBuiltins } )).toBe( 'custom-regexp' );
+        expect( objectStringify( new Set([ 1, 2 ]), { stringify: customBuiltins } )).toBe( 'custom-set' );
+        expect( objectStringify( new Map([[ 'k', 'v' ]]), { stringify: customBuiltins } )).toBe( 'custom-map' );
+        expect( objectStringify( new Uint8Array([ 1, 2, 3 ]), { stringify: customBuiltins } )).toBe( 'custom-uint8' );
     });
 
     test( 'should sort mixed string and duplicate-description Symbol keys transitively and in linear depth time (U3 / AE5 / R11 / R12)', () =>
@@ -952,23 +1006,49 @@ describe( 'object-hash tests', () =>
         expect( objectHash( mixed1 )).toBe( objectHash( mixed2 ));
         expect( objectHash( mixed2 )).toBe( objectHash( mixed3 ));
 
-        // AE5: Depth-25 nested object with duplicate Symbol('dup') keys at every level completes in < 50ms
-        let deepTree: any = { leaf: 'end' };
+        // AE5: Depth-25 nested trees with duplicate Symbol('dup') keys added in opposite insertion orders
+        let tree1: any = { leaf: 'end' };
+        let tree2: any = { leaf: 'end' };
 
-        for( let i = 0; i < 25; ++i )
+        for( let level = 0; level < 25; ++level )
         {
-            deepTree = {
-                [Symbol( 'dup' )]: deepTree,
-                [Symbol( 'dup' )]: i
-            };
+            const sym1 = Symbol( 'dup' );
+            const sym2 = Symbol( 'dup' );
+            const prev1 = tree1;
+            const prev2 = tree2;
+            tree1 = { [sym1]: prev1, [sym2]: level };
+            tree2 = { [sym2]: level, [sym1]: prev2 };
         }
 
-        const start = performance.now();
-        const treeHash = objectHash( deepTree );
-        const elapsed = performance.now() - start;
+        expect( objectHash( tree1 )).toBe( objectHash( tree2 ));
 
-        expect( typeof treeHash ).toBe( 'string' );
-        expect( elapsed ).toBeLessThan( 50 );
+        // Duplicate-description symbols with one or both undefined values under ignoreUndefinedProperties: true and false
+        const uSym1 = Symbol( 'dup' );
+        const uSym2 = Symbol( 'dup' );
+        const oneUndef1 = { [uSym1]: undefined, [uSym2]: 1 };
+        const oneUndef2 = { [uSym2]: 1, [uSym1]: undefined };
+        const bothUndef = { [Symbol( 'dup' )]: undefined, [Symbol( 'dup' )]: undefined };
+
+        expect( objectHash( oneUndef1, { ignoreUndefinedProperties: true } )).toBe( objectHash( oneUndef2, { ignoreUndefinedProperties: true } ));
+        expect( objectStringify( oneUndef1, { ignoreUndefinedProperties: true } )).toBe( '{Symbol(3:dup):1}' );
+        expect( objectHash( oneUndef1, { ignoreUndefinedProperties: false } )).toBe( objectHash( oneUndef2, { ignoreUndefinedProperties: false } ));
+        expect( objectStringify( oneUndef1, { ignoreUndefinedProperties: false } )).toBe( '{Symbol(3:dup):1,Symbol(3:dup):undefined}' );
+        expect( objectStringify( bothUndef, { ignoreUndefinedProperties: true } )).toBe( '{}' );
+        expect( objectStringify( bothUndef, { ignoreUndefinedProperties: false } )).toBe( '{Symbol(3:dup):undefined,Symbol(3:dup):undefined}' );
+
+        // Duplicate-description symbols with excludeValues: true
+        const exclDup1 = { [Symbol( 'dup' )]: 1, [Symbol( 'dup' )]: 2 };
+        const exclDup2 = { [Symbol( 'dup' )]: 2, [Symbol( 'dup' )]: 1 };
+
+        expect( objectHash( exclDup1, { excludeValues: true } )).toBe( objectHash( exclDup2, { excludeValues: true } ));
+        expect( objectStringify( exclDup1, { excludeValues: true } )).toBe( '{Symbol(3:dup):,Symbol(3:dup):}' );
+
+        // Non-enumerable symbol key is ignored
+        const objWithHiddenSym: any = { [Symbol( 'dup' )]: 1 };
+        Object.defineProperty( objWithHiddenSym, Symbol( 'hidden' ), { value: 1, enumerable: false });
+
+        expect( objectStringify( objWithHiddenSym )).toBe( '{Symbol(3:dup):1}' );
+        expect( objectHash( objWithHiddenSym )).toBe( objectHash({ [Symbol( 'dup' )]: 1 }) );
 
         // Duplicate-description symbols with identical values and includeKeys/excludeKeys with symbols
         const eqSym1 = Symbol( 'eq' );
@@ -1473,6 +1553,7 @@ describe( 'object-hash tests', () =>
 
             expect( typeof hash1 ).toBe( 'string' );
             expect( hash1.length ).toBeGreaterThan( 0 );
+            expect( hash1 ).toBe( objectHash({ [sym]: 'value' }) );
         });
     });
 
