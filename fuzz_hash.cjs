@@ -10,7 +10,7 @@ function createFuzzedObject(provider, depth = 0, maxDepth = 4) {
         return provider.consumeString(20);
     }
 
-    const typeChoice = provider.consumeIntegralInRange(0, 14);
+    const typeChoice = provider.consumeIntegralInRange(0, 16);
 
     switch (typeChoice) {
         case 0:
@@ -70,6 +70,18 @@ function createFuzzedObject(provider, depth = 0, maxDepth = 4) {
             return map;
         }
         case 14:
+            return new Date(NaN);
+        case 15:
+            return provider.pickValue([
+                new Number(provider.consumeNumber()),
+                new Number(NaN),
+                new Number(Infinity),
+                new String(provider.consumeString(8)),
+                new Boolean(provider.consumeBoolean()),
+                Object(Symbol(provider.consumeString(5))),
+                Object(42n)
+            ]);
+        case 16:
         default: {
             const obj = {};
             const count = provider.consumeIntegralInRange(0, 4);
@@ -83,68 +95,59 @@ function createFuzzedObject(provider, depth = 0, maxDepth = 4) {
 }
 
 module.exports.fuzz = function(data) {
-    try {
-        const provider = new FuzzedDataProvider(data);
+    const provider = new FuzzedDataProvider(data);
 
-        // 1. Build complex, deeply nested payload
-        const payload = createFuzzedObject(provider);
+    // 1. Build complex, deeply nested payload
+    const payload = createFuzzedObject(provider);
 
-        // 2. Randomly insert circular reference to test cycle detection
-        if (typeof payload === 'object' && payload !== null && provider.consumeBoolean()) {
-            try {
-                payload.circularRef = payload;
-            } catch {
-                // Readonly objects
-            }
+    // 2. Randomly insert circular reference to test cycle detection
+    if (typeof payload === 'object' && payload !== null && provider.consumeBoolean()) {
+        try {
+            payload.circularRef = payload;
+        } catch {
+            // Readonly objects
         }
+    }
 
-        // 3. Fuzz Options construction
-        const algorithms = ['cyrb64', 'murmur3', 'sha256', 'fast', 'balanced', 'strong'];
-        const encodings = ['hex', 'base36', 'base62', 'base64', 'base64url', 'binary', 'buffer'];
-        const bitLengths = [64, 96, 128, 192, 256];
+    // 3. Fuzz Options construction
+    const algorithms = ['cyrb64', 'murmur3', 'sha256', 'fast', 'balanced', 'strong'];
+    const encodings = ['hex', 'base36', 'base62', 'base64', 'base64url'];
+    const bitLengths = [64, 96, 128, 192, 256];
 
-        const options = {
-            algorithm: provider.pickValue(algorithms),
-            encoding: provider.pickValue(encodings),
-            bitLength: provider.pickValue(bitLengths),
-            sortArrays: provider.consumeBoolean(),
-            ignoreUndefinedProperties: provider.consumeBoolean(),
-            excludeValues: provider.consumeBoolean(),
-            excludeKeys: provider.consumeBoolean() ? [provider.consumeString(5)] : undefined,
-            includeKeys: provider.consumeBoolean() ? [provider.consumeString(5)] : undefined
-        };
+    const options = {
+        algorithm: provider.pickValue(algorithms),
+        encoding: provider.pickValue(encodings),
+        bitLength: provider.pickValue(bitLengths),
+        sortArrays: provider.consumeBoolean(),
+        ignoreUndefinedProperties: provider.consumeBoolean(),
+        excludeValues: provider.consumeBoolean(),
+        excludeKeys: provider.consumeBoolean() ? [provider.consumeString(5)] : undefined,
+        includeKeys: provider.consumeBoolean() ? [provider.consumeString(5)] : undefined
+    };
 
-        // 4. Test core functions
-        const strResult = objectHash.objectStringify(payload, options);
-        const hashResult = objectHash.default(payload, options);
-        const bytesResult = objectHash.objectHashBytes(payload, options);
+    // 4. Test core functions
+    const strResult = objectHash.objectStringify(payload, options);
+    const hashResult = objectHash.default(payload, options);
+    const bytesResult = objectHash.objectHashBytes(payload, options);
 
-        if (!(bytesResult instanceof Uint8Array)) {
-            throw new Error('objectHashBytes must return a Uint8Array');
-        }
+    if (typeof strResult !== 'string' || typeof hashResult !== 'string' || !(bytesResult instanceof Uint8Array)) {
+        throw new Error('objectHash / objectStringify / objectHashBytes returned invalid types');
+    }
 
-        // 5. Test Hasher class API
-        const hasher = new objectHash.Hasher(options);
-        hasher.stringify(payload);
-        hasher.hash(payload);
+    // 5. Test Hasher class API
+    const hasher = new objectHash.Hasher(options);
+    hasher.stringify(payload);
+    hasher.hash(payload);
 
-        // 6. Test StreamingHash API
-        const streamer = hasher.createHash();
-        streamer.update(payload);
-        streamer.update(provider.consumeString(20));
-        const streamHash = streamer.digest();
-        const streamBytes = streamer.digestBytes();
-        streamer.reset();
+    // 6. Test StreamingHash API
+    const streamer = hasher.createHash();
+    streamer.update(payload);
+    streamer.update(provider.consumeString(20));
+    const streamHash = streamer.digest();
+    const streamBytes = streamer.digestBytes();
+    streamer.reset();
 
-        if (typeof streamHash !== 'string' || !(streamBytes instanceof Uint8Array)) {
-            throw new Error('StreamingHash returned invalid types');
-        }
-
-    } catch (e) {
-        // Allow expected argument type errors or RangeErrors from invalid crypto options if any
-        if (e instanceof RangeError || e instanceof TypeError) {
-            return;
-        }
-        throw e;
+    if (typeof streamHash !== 'string' || !(streamBytes instanceof Uint8Array)) {
+        throw new Error('StreamingHash returned invalid types');
     }
 };

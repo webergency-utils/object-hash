@@ -556,7 +556,7 @@ describe( 'object-hash tests', () =>
         expect( hashDummy ).toBe( 'dummy_digest' );
 
         // Test passing primitive value to hasher (covers default fallback)
-        const hashNull = objectHash( obj, { hasher: 42 });
+        const hashNull = objectHash( obj, { hasher: 42 as any });
 
         expect( hashNull ).toBeDefined();
 
@@ -687,6 +687,33 @@ describe( 'object-hash tests', () =>
         expect( objectHash( payload, { hasher: 'cyrb64' } )).toBe( objectHash( payload, { algorithm: 'cyrb64' } ));
         expect( objectHash( payload, { hasher: 'murmur3' } )).toBe( objectHash( payload, { algorithm: 'murmur3' } ));
         expect( objectHash( payload, { hasher: 'md5' as any } ).length ).toBeGreaterThan( 0 );
+
+        // ES5 function constructor (returns undefined when called without new, falls back to new)
+        function LegacyHasher( this: any )
+        {
+            if( !( this instanceof LegacyHasher )){ return undefined }
+            ( this as any ).update = () => {};
+            ( this as any ).digest = () => new Uint8Array([ 9, 8, 7, 6, 5, 4, 3, 2 ]);
+        }
+        expect( objectHashBytes( payload, { hasher: LegacyHasher as any } )).toStrictEqual( new Uint8Array([ 9, 8, 7, 6, 5, 4, 3, 2 ]) );
+
+        // Unsupported string hasher when Node crypto is unavailable
+        const origGetBuiltin2 = ( globalThis as any ).process?.getBuiltinModule;
+        try
+        {
+            if( ( globalThis as any ).process )
+            {
+                ( globalThis as any ).process.getBuiltinModule = () => undefined;
+            }
+            expect( () => objectHash( payload, { hasher: 'md5' as any } )).toThrow( /Unsupported hashing algorithm: md5/i );
+        }
+        finally
+        {
+            if( ( globalThis as any ).process )
+            {
+                ( globalThis as any ).process.getBuiltinModule = origGetBuiltin2;
+            }
+        }
 
         // Native Node ESM child-process smoke test on built dist/hash.js (AE6)
         const { execFileSync } = require( 'child_process' );
@@ -942,6 +969,28 @@ describe( 'object-hash tests', () =>
 
         expect( typeof treeHash ).toBe( 'string' );
         expect( elapsed ).toBeLessThan( 50 );
+
+        // Duplicate-description symbols with identical values and includeKeys/excludeKeys with symbols
+        const eqSym1 = Symbol( 'eq' );
+        const eqSym2 = Symbol( 'eq' );
+        const eqObj = { [eqSym1]: 'sameVal', [eqSym2]: 'sameVal', a: 1 };
+        expect( objectStringify( eqObj )).toContain( 'Symbol(2:eq):"sameVal",Symbol(2:eq):"sameVal"' );
+        expect( objectStringify( eqObj, { includeKeys: [ eqSym1 ] } )).toBe( '{Symbol(2:eq):"sameVal"}' );
+        expect( objectStringify( eqObj, { excludeKeys: [ eqSym1, eqSym2 ] } )).toBe( '{"a":1}' );
+    });
+
+    test( 'fuzz_hash.cjs should execute across diverse fuzzed byte buffers without throwing (U4 / R15)', () =>
+    {
+        const { execFileSync } = require( 'child_process' );
+        const fuzzOutput = execFileSync(
+            process.execPath,
+            [
+                '-e',
+                'const fuzzer = require("./fuzz_hash.cjs"); for (let s = 0; s < 50; ++s) { const b = Buffer.alloc(128); for (let i = 0; i < 128; ++i) b[i] = (s * 31 + i * 17) & 0xff; fuzzer.fuzz(b); } console.log("ok");'
+            ],
+            { encoding: 'utf8' }
+        );
+        expect( fuzzOutput.trim() ).toBe( 'ok' );
     });
 
     test( 'should throw an error for unsupported algorithm', () =>
@@ -1133,7 +1182,7 @@ describe( 'object-hash tests', () =>
             const hashStrong = objectHash( obj, { algorithm: 'strong' } );
             expect( hashSha ).toBe( hashStrong );
 
-            expect( () => objectHash( obj, { algorithm: 'unknown' } ) ).toThrowError( 'Unsupported hashing algorithm: unknown' );
+            expect( () => objectHash( obj, { algorithm: 'unknown' as any } ) ).toThrowError( 'Unsupported hashing algorithm: unknown' );
         });
 
         test( 'MurmurHash3 should handle empty string/bytes updates and default to 128-bit (16 bytes)', () =>
@@ -1249,6 +1298,7 @@ describe( 'object-hash tests', () =>
 
                 const cTrunc = new Cyrb64Hash( bits );
                 cTrunc.update( 'abc' );
+                cTrunc.updateBytes( new Uint8Array([ 1, 2, 3 ]) );
                 expect( cTrunc.digest().length ).toBe( bits / 8 );
 
                 const mTrunc = new MurmurHash3( bits );
