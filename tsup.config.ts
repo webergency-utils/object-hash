@@ -4,13 +4,9 @@ export default defineConfig({
     entry     : [ 'src/hash.ts' ],
     format    : [ 'cjs', 'esm' ],
     dts       : true,
+    minify    : false,
     sourcemap : false,
     clean     : true,
     shims     : true,
-    splitting : false,
-    esbuildOptions( options )
-    {
-        options.minifyWhitespace = true;
-        options.minifySyntax = true;
-    }
+    splitting : false
 });
