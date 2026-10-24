@@ -54,6 +54,21 @@ describe( 'object-hash tests', () =>
         const obj2 = { b : 2, a : 1 };
 
         expect( objectHash( obj1 )).toBe( objectHash( obj2 ));
+
+        const threeA = { a : 1, b : 2, c : 3 };
+        const threeB = { c : 3, b : 2, a : 1 };
+        const threeC = { a : 1, c : 3, b : 2 };
+        const threeD = { b : 2, a : 1, c : 3 };
+
+        expect( objectStringify( threeA )).toBe( objectStringify( threeB ));
+        expect( objectStringify( threeA )).toBe( objectStringify( threeC ));
+        expect( objectStringify( threeA )).toBe( objectStringify( threeD ));
+
+        const fourA = { a : 1, b : 2, c : 3, d : 4 };
+        const fourB = { d : 4, b : 2, a : 1, c : 3 };
+
+        expect( objectStringify( fourA )).toBe( objectStringify( fourB ));
+        expect( objectStringify( 'x'.repeat( 60 ))).toBe( `"${ 'x'.repeat( 60 ) }"` );
     });
 
     test( 'should respect ignoreUndefinedProperties option', () =>
@@ -448,10 +463,11 @@ describe( 'object-hash tests', () =>
 
         hasher1.update( 'hello' );
         hasher1.update( 'world' );
+        hasher1.update( '1234567890' );
 
         const hasher2 = new MurmurHash3();
 
-        hasher2.update( 'helloworld' );
+        hasher2.update( 'helloworld1234567890' );
 
         expect( hasher1.digest()).toStrictEqual( hasher2.digest());
 
@@ -1212,6 +1228,13 @@ describe( 'object-hash tests', () =>
             // hash method
             const expectedHash = objectHash( obj, { sortArrays : true, encoding : 'hex' });
             expect( hasher.hash( obj )).toBe( expectedHash );
+
+            // large payload exceeding 8192-char internal buffer flush threshold
+            const largeObj = { data : 'a'.repeat( 9000 ), more : 'b'.repeat( 100 ) };
+            expect( hasher.hash( largeObj )).toBe( objectHash( largeObj, { sortArrays : true, encoding : 'hex' }));
+            expect( objectHash( largeObj, { algorithm : 'murmur3' }).length ).toBe( 28 );
+            expect( objectHash( 'café', { algorithm : 'murmur3' }).length ).toBe( 28 );
+            expect( objectHash({ toJSON : () => objectHash({ inner : 1 }) }).length ).toBe( 14 );
         });
     });
 

@@ -1,8 +1,6 @@
-import { type BitLength, validateBitLength } from './base';
+import { type BitLength, encodeUtf8, validateBitLength } from './base';
 
-const ENCODER = new TextEncoder();
-
-const K = new Uint32Array(
+const K = new Int32Array(
     [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
         0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -14,17 +12,28 @@ const K = new Uint32Array(
         0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
     ]);
 
-const H0 = new Uint32Array(
-    [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
-    ]);
+const W = new Int32Array( 64 );
+const PAD_BLOCK = new Uint8Array( 64 );
+
+function writeUint32BE( out: Uint8Array, offset: number, val: number )
+{
+    out[offset]     = val >>> 24;
+    out[offset + 1] = val >>> 16;
+    out[offset + 2] = val >>> 8;
+    out[offset + 3] = val;
+}
 
 export default class Sha256Hash
 {
-    #state     : Uint32Array;
+    #h0        : number = 0x6a09e667 | 0;
+    #h1        : number = 0xbb67ae85 | 0;
+    #h2        : number = 0x3c6ef372 | 0;
+    #h3        : number = 0xa54ff53a | 0;
+    #h4        : number = 0x510e527f | 0;
+    #h5        : number = 0x9b05688c | 0;
+    #h6        : number = 0x1f83d9ab | 0;
+    #h7        : number = 0x5be0cd19 | 0;
     #buffer = new Uint8Array( 64 );
-    #w = new Uint32Array( 64 );
     #bufLen = 0;
     #totalLen = 0;
     #bitLength : BitLength;
@@ -34,75 +43,72 @@ export default class Sha256Hash
         validateBitLength( bitLength );
 
         this.#bitLength = bitLength;
-        this.#state = new Uint32Array( H0 );
     }
 
-    #compress( state: Uint32Array, block: Uint8Array, offset: number )
+    #compress( block: Uint8Array, offset: number )
     {
-        const w = this.#w;
-
         for( let i = 0; i < 16; ++i )
         {
-            const j = offset + ( i * 4 );
-            w[i] = (
+            const j = offset + ( i << 2 );
+            W[i] = (
                 ( block[j] << 24 ) |
                 ( block[j + 1] << 16 ) |
                 ( block[j + 2] << 8 ) |
                 ( block[j + 3])
-            ) >>> 0;
+            );
         }
 
         for( let i = 16; i < 64; ++i )
         {
-            const w15 = w[i - 15];
-            const s0 = ((( w15 >>> 7 ) | ( w15 << 25 )) ^ (( w15 >>> 18 ) | ( w15 << 14 )) ^ ( w15 >>> 3 )) >>> 0;
-            const w2 = w[i - 2];
-            const s1 = ((( w2 >>> 17 ) | ( w2 << 15 )) ^ (( w2 >>> 19 ) | ( w2 << 13 )) ^ ( w2 >>> 10 )) >>> 0;
+            const w15 = W[i - 15];
+            const s0 = (( w15 >>> 7 ) | ( w15 << 25 )) ^ (( w15 >>> 18 ) | ( w15 << 14 )) ^ ( w15 >>> 3 );
+            const w2 = W[i - 2];
+            const s1 = (( w2 >>> 17 ) | ( w2 << 15 )) ^ (( w2 >>> 19 ) | ( w2 << 13 )) ^ ( w2 >>> 10 );
 
-            w[i] = ( w[i - 16] + s0 + w[i - 7] + s1 ) >>> 0;
+            W[i] = ( W[i - 16] + s0 + W[i - 7] + s1 ) | 0;
         }
 
-        let a = state[0];
-        let b = state[1];
-        let c = state[2];
-        let d = state[3];
-        let e = state[4];
-        let f = state[5];
-        let g = state[6];
-        let h = state[7];
+        let a = this.#h0;
+        let b = this.#h1;
+        let c = this.#h2;
+        let d = this.#h3;
+        let e = this.#h4;
+        let f = this.#h5;
+        let g = this.#h6;
+        let h = this.#h7;
 
         for( let i = 0; i < 64; ++i )
         {
-            const S1 = ((( e >>> 6 ) | ( e << 26 )) ^ (( e >>> 11 ) | ( e << 21 )) ^ (( e >>> 25 ) | ( e << 7 ))) >>> 0;
-            const ch = (( e & f ) ^ (( ~e ) & g )) >>> 0;
-            const temp1 = ( h + S1 + ch + K[i] + w[i]) >>> 0;
-            const S0 = ((( a >>> 2 ) | ( a << 30 )) ^ (( a >>> 13 ) | ( a << 19 )) ^ (( a >>> 22 ) | ( a << 10 ))) >>> 0;
-            const maj = (( a & b ) ^ ( a & c ) ^ ( b & c )) >>> 0;
-            const temp2 = ( S0 + maj ) >>> 0;
+            const S1 = (( e >>> 6 ) | ( e << 26 )) ^ (( e >>> 11 ) | ( e << 21 )) ^ (( e >>> 25 ) | ( e << 7 ));
+            const ch = ( e & f ) ^ (( ~e ) & g );
+            const temp1 = ( h + S1 + ch + K[i] + W[i]) | 0;
+            const S0 = (( a >>> 2 ) | ( a << 30 )) ^ (( a >>> 13 ) | ( a << 19 )) ^ (( a >>> 22 ) | ( a << 10 ));
+            const maj = ( a & b ) ^ ( a & c ) ^ ( b & c );
+            const temp2 = ( S0 + maj ) | 0;
 
             h = g;
             g = f;
             f = e;
-            e = ( d + temp1 ) >>> 0;
+            e = ( d + temp1 ) | 0;
             d = c;
             c = b;
             b = a;
-            a = ( temp1 + temp2 ) >>> 0;
+            a = ( temp1 + temp2 ) | 0;
         }
 
-        state[0] = ( state[0] + a ) >>> 0;
-        state[1] = ( state[1] + b ) >>> 0;
-        state[2] = ( state[2] + c ) >>> 0;
-        state[3] = ( state[3] + d ) >>> 0;
-        state[4] = ( state[4] + e ) >>> 0;
-        state[5] = ( state[5] + f ) >>> 0;
-        state[6] = ( state[6] + g ) >>> 0;
-        state[7] = ( state[7] + h ) >>> 0;
+        this.#h0 = ( this.#h0 + a ) | 0;
+        this.#h1 = ( this.#h1 + b ) | 0;
+        this.#h2 = ( this.#h2 + c ) | 0;
+        this.#h3 = ( this.#h3 + d ) | 0;
+        this.#h4 = ( this.#h4 + e ) | 0;
+        this.#h5 = ( this.#h5 + f ) | 0;
+        this.#h6 = ( this.#h6 + g ) | 0;
+        this.#h7 = ( this.#h7 + h ) | 0;
     }
 
     update( str: string )
     {
-        this.updateBytes( ENCODER.encode( str ));
+        this.updateBytes( encodeUtf8( str ));
     }
 
     updateBytes( bytes: Uint8Array )
@@ -120,74 +126,124 @@ export default class Sha256Hash
             const needed = 64 - this.#bufLen;
             const toCopy = Math.min( needed, len );
 
-            this.#buffer.set( bytes.subarray( offset, offset + toCopy ), this.#bufLen );
+            for( let i = 0; i < toCopy; ++i )
+            {
+                this.#buffer[this.#bufLen + i] = bytes[offset + i];
+            }
+
             this.#bufLen += toCopy;
             offset += toCopy;
             len -= toCopy;
 
             if( this.#bufLen === 64 )
             {
-                this.#compress( this.#state, this.#buffer, 0 );
+                this.#compress( this.#buffer, 0 );
                 this.#bufLen = 0;
             }
         }
 
         while( len >= 64 )
         {
-            this.#compress( this.#state, bytes, offset );
+            this.#compress( bytes, offset );
             offset += 64;
             len -= 64;
         }
 
         if( len > 0 )
         {
-            this.#buffer.set( bytes.subarray( offset, offset + len ), 0 );
+            for( let i = 0; i < len; ++i )
+            {
+                this.#buffer[i] = bytes[offset + i];
+            }
+
             this.#bufLen = len;
         }
     }
 
     digest(): Uint8Array
     {
-        const state = new Uint32Array( this.#state );
-        const padBlock = new Uint8Array( 64 );
+        const s0 = this.#h0;
+        const s1 = this.#h1;
+        const s2 = this.#h2;
+        const s3 = this.#h3;
+        const s4 = this.#h4;
+        const s5 = this.#h5;
+        const s6 = this.#h6;
+        const s7 = this.#h7;
+
         let padLen = this.#bufLen;
 
-        if( padLen > 0 )
+        for( let i = 0; i < padLen; ++i )
         {
-            padBlock.set( this.#buffer.subarray( 0, padLen ), 0 );
+            PAD_BLOCK[i] = this.#buffer[i];
         }
 
-        padBlock[padLen++] = 0x80;
+        PAD_BLOCK[padLen++] = 0x80;
 
         if( padLen > 56 )
         {
-            padBlock.fill( 0, padLen, 64 );
-            this.#compress( state, padBlock, 0 );
-            padBlock.fill( 0, 0, 56 );
+            PAD_BLOCK.fill( 0, padLen, 64 );
+            this.#compress( PAD_BLOCK, 0 );
+            PAD_BLOCK.fill( 0, 0, 56 );
         }
         else
         {
-            padBlock.fill( 0, padLen, 56 );
+            PAD_BLOCK.fill( 0, padLen, 56 );
         }
 
         const totalBits = this.#totalLen * 8;
         const highBits = Math.floor( totalBits / 0x100000000 ) >>> 0;
         const lowBits = totalBits >>> 0;
 
-        const padView = new DataView( padBlock.buffer );
-        padView.setUint32( 56, highBits, false );
-        padView.setUint32( 60, lowBits, false );
+        writeUint32BE( PAD_BLOCK, 56, highBits );
+        writeUint32BE( PAD_BLOCK, 60, lowBits );
 
-        this.#compress( state, padBlock, 0 );
+        this.#compress( PAD_BLOCK, 0 );
+
+        const h0 = this.#h0;
+        const h1 = this.#h1;
+        const h2 = this.#h2;
+        const h3 = this.#h3;
+        const h4 = this.#h4;
+        const h5 = this.#h5;
+        const h6 = this.#h6;
+        const h7 = this.#h7;
+
+        this.#h0 = s0;
+        this.#h1 = s1;
+        this.#h2 = s2;
+        this.#h3 = s3;
+        this.#h4 = s4;
+        this.#h5 = s5;
+        this.#h6 = s6;
+        this.#h7 = s7;
 
         const byteLength = this.#bitLength / 8;
         const outBytes = new Uint8Array( byteLength );
-        const outView = new DataView( outBytes.buffer );
-        const words = byteLength >>> 2;
 
-        for( let i = 0; i < words; ++i )
+        writeUint32BE( outBytes, 0, h0 );
+        writeUint32BE( outBytes, 4, h1 );
+
+        if( byteLength > 8 )
         {
-            outView.setUint32( i * 4, state[i], false );
+            writeUint32BE( outBytes, 8, h2 );
+        }
+
+        if( byteLength > 12 )
+        {
+            writeUint32BE( outBytes, 12, h3 );
+        }
+
+        if( byteLength > 16 )
+        {
+            writeUint32BE( outBytes, 16, h4 );
+            writeUint32BE( outBytes, 20, h5 );
+        }
+
+        if( byteLength > 24 )
+        {
+            writeUint32BE( outBytes, 24, h6 );
+            writeUint32BE( outBytes, 28, h7 );
         }
 
         return outBytes;

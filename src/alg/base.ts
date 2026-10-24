@@ -1,5 +1,32 @@
 declare const Buffer: any;
 
+const UTF8_ENCODER = new TextEncoder();
+const ASCII_BUF = new Uint8Array( 64 );
+
+export function encodeUtf8( str: string ): Uint8Array
+{
+    const len = str.length;
+
+    if( len < 64 )
+    {
+        for( let i = 0; i < len; ++i )
+        {
+            const c = str.charCodeAt( i );
+
+            if( c >= 0x80 )
+            {
+                return UTF8_ENCODER.encode( str );
+            }
+
+            ASCII_BUF[i] = c;
+        }
+
+        return ASCII_BUF.subarray( 0, len );
+    }
+
+    return UTF8_ENCODER.encode( str );
+}
+
 export function bytesToHex( bytes: Uint8Array ): string
 {
     if( typeof Buffer === 'function' )
@@ -20,31 +47,31 @@ export function bytesToHex( bytes: Uint8Array ): string
 
 export function bytesToBase36( bytes: Uint8Array ): string
 {
-    const view = new DataView( bytes.buffer, bytes.byteOffset, bytes.byteLength );
-    const results: string[] = [];
+    const len = bytes.length;
+    let out = '';
     let i = 0;
 
-    for( ; i + 4 <= bytes.length; i += 4 )
+    for( ; i + 4 <= len; i += 4 )
     {
-        const val = view.getUint32( i, false );
+        const val = (( bytes[i] << 24 ) | ( bytes[i + 1] << 16 ) | ( bytes[i + 2] << 8 ) | bytes[i + 3]) >>> 0;
 
-        results.push( val.toString( 36 ).padStart( 7, '0' ));
+        out += val.toString( 36 ).padStart( 7, '0' );
     }
 
-    if( i < bytes.length )
+    if( i < len )
     {
         let val = 0;
-        const remaining = bytes.length - i;
+        const remaining = len - i;
 
         for( let j = 0; j < remaining; ++j )
         {
             val = ( val << 8 ) | bytes[i + j];
         }
 
-        results.push( val.toString( 36 ).padStart( remaining * 2, '0' ));
+        out += val.toString( 36 ).padStart( remaining * 2, '0' );
     }
 
-    return results.join( '' );
+    return out;
 }
 
 
@@ -52,13 +79,13 @@ const BASE62_CHARS = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV
 
 export function bytesToBase62( bytes: Uint8Array ): string
 {
-    const view = new DataView( bytes.buffer, bytes.byteOffset, bytes.byteLength );
-    const results: string[] = [];
+    const len = bytes.length;
+    let out = '';
     let i = 0;
 
-    for( ; i + 4 <= bytes.length; i += 4 )
+    for( ; i + 4 <= len; i += 4 )
     {
-        let val = view.getUint32( i, false );
+        let val = (( bytes[i] << 24 ) | ( bytes[i + 1] << 16 ) | ( bytes[i + 2] << 8 ) | bytes[i + 3]) >>> 0;
         let chunk = '';
 
         for( let j = 0; j < 6; ++j )
@@ -67,13 +94,13 @@ export function bytesToBase62( bytes: Uint8Array ): string
             val = Math.floor( val / 62 );
         }
 
-        results.push( chunk );
+        out += chunk;
     }
 
-    if( i < bytes.length )
+    if( i < len )
     {
         let val = 0;
-        const remaining = bytes.length - i;
+        const remaining = len - i;
 
         for( let j = 0; j < remaining; ++j )
         {
@@ -89,10 +116,10 @@ export function bytesToBase62( bytes: Uint8Array ): string
             val = Math.floor( val / 62 );
         }
 
-        results.push( chunk );
+        out += chunk;
     }
 
-    return results.join( '' );
+    return out;
 }
 
 
