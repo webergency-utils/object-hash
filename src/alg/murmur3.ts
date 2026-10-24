@@ -1,15 +1,19 @@
+import { type BitLength, mixPassSeed, validateBitLength } from './base';
+
 const ENCODER = new TextEncoder();
 
 export default class MurmurHash3
 {
-    #states: { h1: number, h2: number, h3: number, h4: number }[];
+    #states    : { h1 : number, h2 : number, h3 : number, h4 : number }[];
     #buffer = new Uint8Array( 16 );
     #bufLen = 0;
     #totalLen = 0;
-    #bitLength: 64 | 96 | 128 | 192 | 256;
+    #bitLength : BitLength;
 
-    constructor( bitLength: 64 | 96 | 128 | 192 | 256 = 64 )
+    constructor( bitLength: BitLength = 128 )
     {
+        validateBitLength( bitLength );
+
         this.#bitLength = bitLength;
 
         const passes = Math.ceil( bitLength / 128 );
@@ -17,23 +21,21 @@ export default class MurmurHash3
 
         for( let i = 0; i < passes; ++i )
         {
-            const seed = ( 0xdeadbeef ^ i ) >>> 0;
-
             this.#states.push({
-                h1: seed,
-                h2: seed,
-                h3: seed,
-                h4: seed
+                h1 : mixPassSeed( 0xdeadbeef, 0x9e3779b9, i ),
+                h2 : mixPassSeed( 0x41c6ce57, 0x85ebca6b, i ),
+                h3 : mixPassSeed( 0x1b873593, 0xc2b2ae35, i ),
+                h4 : mixPassSeed( 0xcc9e2d51, 0x27d4eb2f, i )
             });
         }
     }
 
     #mixBlock( b: Uint8Array, o: number )
     {
-        let k1 = ( b[o] ) | ( b[o + 1] << 8 ) | ( b[o + 2] << 16 ) | ( b[o + 3] << 24 );
-        let k2 = ( b[o + 4] ) | ( b[o + 5] << 8 ) | ( b[o + 6] << 16 ) | ( b[o + 7] << 24 );
-        let k3 = ( b[o + 8] ) | ( b[o + 9] << 8 ) | ( b[o + 10] << 16 ) | ( b[o + 11] << 24 );
-        let k4 = ( b[o + 12] ) | ( b[o + 13] << 8 ) | ( b[o + 14] << 16 ) | ( b[o + 15] << 24 );
+        const k1 = ( b[o]) | ( b[o + 1] << 8 ) | ( b[o + 2] << 16 ) | ( b[o + 3] << 24 );
+        const k2 = ( b[o + 4]) | ( b[o + 5] << 8 ) | ( b[o + 6] << 16 ) | ( b[o + 7] << 24 );
+        const k3 = ( b[o + 8]) | ( b[o + 9] << 8 ) | ( b[o + 10] << 16 ) | ( b[o + 11] << 24 );
+        const k4 = ( b[o + 12]) | ( b[o + 13] << 8 ) | ( b[o + 14] << 16 ) | ( b[o + 15] << 24 );
 
         const c1 = 0x239b961b;
         const c2 = 0xab0e9789;
@@ -161,8 +163,10 @@ export default class MurmurHash3
             let k3 = 0;
             let k4 = 0;
 
-            if( tailLen >= 15 ){ k4 ^= b[14] << 16; }
-            if( tailLen >= 14 ){ k4 ^= b[13] << 8; }
+            if( tailLen >= 15 ){ k4 ^= b[14] << 16 }
+
+            if( tailLen >= 14 ){ k4 ^= b[13] << 8 }
+
             if( tailLen >= 13 )
             {
                 k4 ^= b[12];
@@ -172,9 +176,12 @@ export default class MurmurHash3
                 h4 ^= k4;
             }
 
-            if( tailLen >= 12 ){ k3 ^= b[11] << 24; }
-            if( tailLen >= 11 ){ k3 ^= b[10] << 16; }
-            if( tailLen >= 10 ){ k3 ^= b[9] << 8; }
+            if( tailLen >= 12 ){ k3 ^= b[11] << 24 }
+
+            if( tailLen >= 11 ){ k3 ^= b[10] << 16 }
+
+            if( tailLen >= 10 ){ k3 ^= b[9] << 8 }
+
             if( tailLen >= 9 )
             {
                 k3 ^= b[8];
@@ -184,9 +191,12 @@ export default class MurmurHash3
                 h3 ^= k3;
             }
 
-            if( tailLen >= 8 ){ k2 ^= b[7] << 24; }
-            if( tailLen >= 7 ){ k2 ^= b[6] << 16; }
-            if( tailLen >= 6 ){ k2 ^= b[5] << 8; }
+            if( tailLen >= 8 ){ k2 ^= b[7] << 24 }
+
+            if( tailLen >= 7 ){ k2 ^= b[6] << 16 }
+
+            if( tailLen >= 6 ){ k2 ^= b[5] << 8 }
+
             if( tailLen >= 5 )
             {
                 k2 ^= b[4];
@@ -196,9 +206,12 @@ export default class MurmurHash3
                 h2 ^= k2;
             }
 
-            if( tailLen >= 4 ){ k1 ^= b[3] << 24; }
-            if( tailLen >= 3 ){ k1 ^= b[2] << 16; }
-            if( tailLen >= 2 ){ k1 ^= b[1] << 8; }
+            if( tailLen >= 4 ){ k1 ^= b[3] << 24 }
+
+            if( tailLen >= 3 ){ k1 ^= b[2] << 16 }
+
+            if( tailLen >= 2 ){ k1 ^= b[1] << 8 }
+
             if( tailLen >= 1 )
             {
                 k1 ^= b[0];

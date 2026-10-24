@@ -4,7 +4,7 @@ export function bytesToHex( bytes: Uint8Array ): string
 {
     if( typeof Buffer === 'function' )
     {
-        return Buffer.from( bytes ).toString( 'hex' );
+        return Buffer.from( bytes.buffer, bytes.byteOffset, bytes.byteLength ).toString( 'hex' );
     }
 
     let hex = '';
@@ -102,7 +102,7 @@ export function bytesToBase64( bytes: Uint8Array ): string
 {
     if( typeof Buffer === 'function' )
     {
-        return Buffer.from( bytes ).toString( 'base64' );
+        return Buffer.from( bytes.buffer, bytes.byteOffset, bytes.byteLength ).toString( 'base64' );
     }
 
     let result = '';
@@ -151,7 +151,7 @@ export function bytesToBase64Url( bytes: Uint8Array ): string
 {
     if( typeof Buffer === 'function' )
     {
-        return Buffer.from( bytes ).toString( 'base64url' );
+        return Buffer.from( bytes.buffer, bytes.byteOffset, bytes.byteLength ).toString( 'base64url' );
     }
 
     const b64 = bytesToBase64( bytes );
@@ -161,11 +161,44 @@ export function bytesToBase64Url( bytes: Uint8Array ): string
 }
 
 
-export function encodeBytes( bytes: Uint8Array, encoding: 'hex' | 'base36' | 'base62' | 'base64' | 'base64url' = 'base36' ): string
+export type BitLength = 64 | 96 | 128 | 192 | 256;
+export type Encoding = 'hex' | 'base36' | 'base62' | 'base64' | 'base64url';
+
+export function validateBitLength( bitLength: unknown ): asserts bitLength is BitLength
 {
+    if( bitLength !== 64 && bitLength !== 96 && bitLength !== 128 && bitLength !== 192 && bitLength !== 256 )
+    {
+        throw new Error( `Invalid bitLength: ${ bitLength }. Expected one of 64, 96, 128, 192, 256.` );
+    }
+}
+
+export function validateEncoding( encoding: unknown ): asserts encoding is Encoding
+{
+    if( encoding !== 'hex' && encoding !== 'base36' && encoding !== 'base62' && encoding !== 'base64' && encoding !== 'base64url' )
+    {
+        throw new Error( `Invalid encoding: ${ encoding }. Expected one of hex, base36, base62, base64, base64url.` );
+    }
+}
+
+export function mixPassSeed( base: number, mult: number, passIndex: number ): number
+{
+    let v = ( base ^ Math.imul( passIndex + 1, mult )) | 0;
+    v = Math.imul( v ^ ( v >>> 16 ), 0x85ebca6b );
+    v = Math.imul( v ^ ( v >>> 13 ), 0xc2b2ae35 );
+
+    return ( v ^ ( v >>> 16 )) >>> 0;
+}
+
+export function encodeBytes( bytes: Uint8Array, encoding: Encoding = 'base36' ): string
+{
+    validateEncoding( encoding );
+
     if( encoding === 'hex' ){ return bytesToHex( bytes ) }
+
     if( encoding === 'base64' ){ return bytesToBase64( bytes ) }
+
     if( encoding === 'base64url' ){ return bytesToBase64Url( bytes ) }
+
     if( encoding === 'base62' ){ return bytesToBase62( bytes ) }
 
     return bytesToBase36( bytes );

@@ -35,7 +35,7 @@ console.log( hash ); // e.g., "1h8sk5h0yvwomq"
 // Serialize to a stable, deterministic string representation
 const stableString = objectStringify( data );
 console.log( stableString );
-// '{"meta":{"active":true,"id":Symbol(unique)},"name":"Alice","tags":Set("admin","user")}'
+// '{"meta":{"active":true,"id":Symbol(6:unique)},"name":"Alice","tags":Set{7:"admin",6:"user"}}'
 ```
 
 ## Installation & Setup
@@ -52,7 +52,9 @@ No external runtime configuration, peer dependencies, or build setup steps are r
 
 The library uses a depth-first traversal strategy to serialize arbitrary JavaScript values into a stable, normalized string format before hashing.
 
-* **Key Sorting**: Object keys are sorted deterministically. In the case of duplicate Symbol descriptions, keys are sorted by the serialized string representation of their mapped values to guarantee process-run stability.
+* **Key Sorting**: Object keys are sorted deterministically, partitioning string keys before symbol keys. In the case of duplicate Symbol descriptions, keys are sorted by the memoized serialized string representation of their mapped values to guarantee process-run stability in linear depth time.
+* **Canonical Framing & Binary Encoding**: Variable-length tokens (`Symbol`, `RegExp`, `Error`, `Set`, `Map`, and `StreamingHash` chunks) use length-prefixed framing (`<len>:<payload>`) to prevent delimiter-injection collisions. Binary buffers and views (`ArrayBuffer`, `SharedArrayBuffer`, `DataView`, `TypedArray`, `Buffer`) are serialized uniformly as `<TypeTag>(<byteLength>:<lowercaseHex>)`.
+* **Isomorphic SHA-256**: `sha256` / `strong` automatically uses Node's built-in `crypto` module when available (`process.getBuiltinModule('crypto')`) and falls back to the bundled zero-dependency pure-JS `Sha256Hash` implementation in browsers, Workers, and edge runtimes.
 * **Reference Hashing**: Functions and custom class instances are hashed by identity. When first encountered, they are assigned a stateless, high-entropy process-lifetime unique ID using cryptographic APIs (Web Crypto `crypto.getRandomValues` or Node.js `crypto.randomBytes` depending on environment availability), falling back to `Math.random()` in legacy runtimes.
 * **Collection Handling**: `Map` and `Set` collections are sorted by their serialized string representations before hashing to ensure stability regardless of insertion order.
 * **Memory Management**: Tree traversal uses a temporary `Set` of visited references to detect circular loops safely without causing stack overflows. The visited set is cleaned up in a `finally` block to prevent memory leaks and ensure shared object references are traversed correctly.
@@ -64,6 +66,7 @@ The library uses a depth-first traversal strategy to serialize arbitrary JavaScr
 * **`objectHashBytes`**: A helper function returning the raw `Uint8Array` digest bytes of any value.
 * **`Hasher`**: A stateless helper class pre-configured with options for multiple hash and stringify runs.
 * **`StreamingHash`**: A class that supports stateful streaming / incremental updates and resets.
+* **`Cyrb64Hash` / `MurmurHash3` / `Sha256Hash`**: Direct incremental hash algorithm classes for 64-256 bit digests.
 * **`ObjectStringifyOptions`**: The options type configuration for algorithms, serialization limits, and key filters.
 
 ## API Reference
@@ -220,48 +223,59 @@ type ObjectStringifyOptions = AlgorithmOptions | HasherOptions;
 `ObjectStringifyOptions` is a union of two types depending on whether you provide an algorithm name or a custom hasher instance.
 
 ```typescript
+export type BitLength = 64 | 96 | 128 | 192 | 256;
+export type Encoding = 'hex' | 'base36' | 'base62' | 'base64' | 'base64url';
+export type Algorithm = 'cyrb64' | 'murmur3' | 'sha256' | 'fast' | 'balanced' | 'strong';
+
+export type CustomHasher = {
+    update( data: string ): void
+    updateBytes?( bytes: Uint8Array ): void
+    digest(): Uint8Array | ArrayBuffer | ArrayBufferView | number[] | string
+};
+
+export type HasherInput =
+    | Algorithm
+    | CustomHasher
+    | ( () => CustomHasher )
+    | ( new () => CustomHasher );
+
 type BaseOptions = {
     sortArrays                  : boolean
     ignoreUndefinedProperties   : boolean
     stringify?                  : ( obj: object ) => string | undefined
-    bitLength?                  : 64 | 96 | 128 | 192 | 256
-    encoding?                   : 'hex' | 'base36' | 'base62' | 'base64' | 'base64url'
-    excludeKeys?                : string[]
-    includeKeys?                : string[]
+    bitLength?                  : BitLength
+    encoding?                   : Encoding
+    excludeKeys?                : Array<string | symbol>
+    includeKeys?                : Array<string | symbol>
     excludeValues?              : boolean
-}
+};
 
 type AlgorithmOptions = BaseOptions & {
-    algorithm?                  : 'cyrb64' | 'murmur3' | 'sha256' | 'fast' | 'balanced' | 'strong'
-    hasher                      : never
-}
+    algorithm?                  : Algorithm
+    hasher?                     : undefined
+};
 
 type HasherOptions = BaseOptions & {
-    algorithm                   : never
-    hasher                      : Accumulator
-}
-
-interface Accumulator {
-    update( str: string ): void;
-    updateBytes( bytes: Uint8Array ): void;
-}
+    algorithm?                  : undefined
+    hasher?                     : HasherInput
+};
 ```
 
 #### Property Descriptions
 
 * **`sortArrays`**: `boolean` (Default: `false`) - When `true`, arrays are sorted by their serialized element representations before hashing.
 * **`ignoreUndefinedProperties`**: `boolean` (Default: `true`) - When `true`, object keys with `undefined` values are skipped.
-* **`stringify`**: `( obj: object ) => string | undefined` (Optional) - A custom serialization function. If it returns `undefined`, the standard serialization logic is used as a fallback.
-* **`bitLength`**: `64 | 96 | 128 | 192 | 256` (Default: `64` for cyrb64, `128` for murmur3) - The hash length in bits.
-* **`encoding`**: `'hex' | 'base36' | 'base62' | 'base64' | 'base64url'` (Default: `'base36'`) - The string encoding of the hash digest output.
-* **`excludeKeys`**: `string[]` (Optional) - List of property keys to exclude recursively from plain objects during serialization.
-* **`includeKeys`**: `string[]` (Optional) - Allowlist of property keys to include recursively. Takes precedence over `excludeKeys` if both are specified.
+* **`stringify`**: `( obj: object ) => string | undefined` (Optional) - A custom serialization hook evaluated on non-null objects **before** built-in `instanceof` handlers (`Date`, `RegExp`, `Set`, `Map`, binary views, etc.) and **before** `obj.toJSON()`. If it returns `undefined`, standard built-in/default serialization runs as a fallback.
+* **`bitLength`**: `64 | 96 | 128 | 192 | 256` (Default: `64` for `cyrb64`/`fast`, `128` for `murmur3`/`balanced`, `256` for `sha256`/`strong`) - The hash digest length in bits. Explicit `bitLength` overrides are honored uniformly across all algorithms (including `sha256`/`strong` and custom hashers) by slicing the digest bytes to `bitLength / 8`. Passing an unsupported `bitLength` throws an `Error`.
+* **`encoding`**: `'hex' | 'base36' | 'base62' | 'base64' | 'base64url'` (Default: `'base36'`) - The string encoding of the hash digest output. Passing an unsupported `encoding` throws an `Error`.
+* **`excludeKeys`**: `Array<string | symbol>` (Optional) - List of string or symbol keys to exclude recursively from plain objects during serialization.
+* **`includeKeys`**: `Array<string | symbol>` (Optional) - Allowlist of string or symbol keys to include recursively. Takes precedence over `excludeKeys` if both are specified.
 * **`excludeValues`**: `boolean` (Optional) - When `true`, hashes only the shape/schema of objects, ignoring property values.
 * **`algorithm`**: `'cyrb64' | 'murmur3' | 'sha256' | 'fast' | 'balanced' | 'strong'` (Default: `'fast'`) - The hashing algorithm to use.
-  * `'fast'` and `'cyrb64'` map to cyrb64 (64-bit).
-  * `'balanced'` and `'murmur3'` map to MurmurHash3 (128-bit).
-  * `'strong'` and `'sha256'` map to SHA-256 (256-bit).
-* **`hasher`**: `Accumulator` - A custom hasher instance conforming to the `Accumulator` interface (e.g., custom wrappers or native Node `crypto` hashes).
+  * `'fast'` and `'cyrb64'` map to `Cyrb64Hash` (default `bitLength`: `64`).
+  * `'balanced'` and `'murmur3'` map to `MurmurHash3` (default `bitLength`: `128`).
+  * `'strong'` and `'sha256'` map to `Sha256Hash` / Node `crypto` SHA-256 (default `bitLength`: `256`).
+* **`hasher`**: `HasherInput` - An algorithm alias string, a `CustomHasher` instance, a factory function `() => CustomHasher`, or a custom hasher class constructor `new () => CustomHasher`.
 
 ## Maintenance
 
