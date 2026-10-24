@@ -2,8 +2,8 @@ import { type BitLength, mixPassSeed, validateBitLength } from './base';
 
 export default class Cyrb64Hash
 {
-    #states: { h1: number, h2: number }[];
-    #bitLength: BitLength;
+    #states    : { h1 : number, h2 : number }[];
+    #bitLength : BitLength;
 
     constructor( bitLength: BitLength = 64 )
     {
@@ -17,8 +17,8 @@ export default class Cyrb64Hash
         for( let i = 0; i < passes; ++i )
         {
             this.#states.push({
-                h1: mixPassSeed( 0xdeadbeef, 0x9e3779b9, i ),
-                h2: mixPassSeed( 0x41c6ce57, 0x85ebca6b, i )
+                h1 : mixPassSeed( 0xdeadbeef, 0x9e3779b9, i ),
+                h2 : mixPassSeed( 0x41c6ce57, 0x85ebca6b, i )
             });
         }
     }

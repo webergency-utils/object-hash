@@ -10,7 +10,7 @@ import
     type BitLength, 
     type Encoding 
 } 
-from './alg/base';
+    from './alg/base';
 
 export { Cyrb64Hash, MurmurHash3, Sha256Hash, type BitLength, type Encoding };
 
@@ -23,7 +23,7 @@ function getNodeCrypto(): any
 
 class StringAccumulator implements Accumulator
 {
-    #chunks: string[] = [];
+    #chunks : string[] = [];
 
     update( str: string )
     {
@@ -61,8 +61,8 @@ export type HasherInput =
 
 class HasherAdapter implements Accumulator
 {
-    #hasher: any;
-    #byteLength?: number;
+    #hasher      : any;
+    #byteLength? : number;
 
     constructor( hasher: any, byteLength?: number )
     {
@@ -205,7 +205,7 @@ function createHasher( opt: any, bitLength?: BitLength ): HasherAdapter
     return new HasherAdapter( new Cyrb64Hash( b ));
 }
 
-function createConfiguredHasher( options: Partial<ObjectStringifyOptions> ): { hasher: HasherAdapter, encoding: Encoding }
+function createConfiguredHasher( options: Partial<ObjectStringifyOptions> ): { hasher : HasherAdapter, encoding : Encoding }
 {
     const { bitLength, algorithm = 'fast', encoding = 'base36', hasher } = options;
 
@@ -214,13 +214,13 @@ function createConfiguredHasher( options: Partial<ObjectStringifyOptions> ): { h
     if( hasher !== undefined )
     {
         return {
-            hasher: createHasher( hasher, bitLength ),
+            hasher : createHasher( hasher, bitLength ),
             encoding
         };
     }
 
     return {
-        hasher: createHasher( resolveAlgorithm( algorithm ), bitLength ),
+        hasher : createHasher( resolveAlgorithm( algorithm ), bitLength ),
         encoding
     };
 }
@@ -277,36 +277,36 @@ function getIndexHash( val: Function | object ): string
 }
 
 type BaseOptions = {
-    sortArrays                  : boolean
-    ignoreUndefinedProperties   : boolean
-    stringify?                  : ( obj: any ) => string | undefined
-    bitLength?                  : BitLength
-    encoding?                   : Encoding
-    excludeKeys?                : ( string | symbol )[]
-    includeKeys?                : ( string | symbol )[]
-    excludeValues?              : boolean
-}
+    sortArrays                : boolean
+    ignoreUndefinedProperties : boolean
+    stringify?                : ( obj: any ) => string | undefined
+    bitLength?                : BitLength
+    encoding?                 : Encoding
+    excludeKeys?              : ( string | symbol )[]
+    includeKeys?              : ( string | symbol )[]
+    excludeValues?            : boolean
+};
 
 type AlgorithmOptions = BaseOptions & {
-    algorithm?                  : Algorithm
-    hasher?                     : never
-}
+    algorithm? : Algorithm
+    hasher?    : never
+};
 
 type HasherOptions = BaseOptions & {
-    algorithm?                  : never
-    hasher?                     : HasherInput
-}
+    algorithm? : never
+    hasher?    : HasherInput
+};
 
 export type ObjectStringifyOptions = AlgorithmOptions | HasherOptions;
 
 interface NormalizedStringifyOptions
 {
-    sortArrays                  : boolean
-    ignoreUndefinedProperties   : boolean
-    stringify?                  : ( obj: any ) => string | undefined
-    excludeKeysSet?             : Set<string | symbol>
-    includeKeysSet?             : Set<string | symbol>
-    excludeValues?              : boolean
+    sortArrays                : boolean
+    ignoreUndefinedProperties : boolean
+    stringify?                : ( obj: any ) => string | undefined
+    excludeKeysSet?           : Set<string | symbol>
+    includeKeysSet?           : Set<string | symbol>
+    excludeValues?            : boolean
 }
 
 function normalizeStringifyOptions( options: Partial<ObjectStringifyOptions> ): NormalizedStringifyOptions
@@ -324,8 +324,8 @@ function normalizeStringifyOptions( options: Partial<ObjectStringifyOptions> ): 
         sortArrays,
         ignoreUndefinedProperties,
         stringify,
-        excludeKeysSet: excludeKeys ? new Set( excludeKeys ) : undefined,
-        includeKeysSet: includeKeys ? new Set( includeKeys ) : undefined,
+        excludeKeysSet : excludeKeys ? new Set( excludeKeys ) : undefined,
+        includeKeysSet : includeKeys ? new Set( includeKeys ) : undefined,
         excludeValues
     };
 }
@@ -788,13 +788,15 @@ function resolveAlgorithm( alg?: 'cyrb64' | 'murmur3' | 'sha256' | 'fast' | 'bal
     const a = alg || 'fast';
 
     if( a === 'fast' || a === 'cyrb64' ){ return 'cyrb64' }
+
     if( a === 'balanced' || a === 'murmur3' ){ return 'murmur3' }
+
     if( a === 'strong' || a === 'sha256' ){ return 'sha256' }
 
     throw new Error( `Unsupported hashing algorithm: ${ a }` );
 }
 
-export function objectStringify( obj: any, options: Partial<ObjectStringifyOptions> = {} ): string
+export function objectStringify( obj: any, options: Partial<ObjectStringifyOptions> = {}): string
 {
     const accumulator = new StringAccumulator();
 
@@ -803,7 +805,7 @@ export function objectStringify( obj: any, options: Partial<ObjectStringifyOptio
     return accumulator.toString();
 }
 
-export default function objectHash( obj: any, options: Partial<ObjectStringifyOptions> = {} ): string
+export default function objectHash( obj: any, options: Partial<ObjectStringifyOptions> = {}): string
 {
     const { hasher: mainHasher, encoding } = createConfiguredHasher( options );
 
@@ -812,7 +814,7 @@ export default function objectHash( obj: any, options: Partial<ObjectStringifyOp
     return digestToString( mainHasher, encoding );
 }
 
-export function objectHashBytes( obj: any, options: Partial<ObjectStringifyOptions> = {} ): Uint8Array
+export function objectHashBytes( obj: any, options: Partial<ObjectStringifyOptions> = {}): Uint8Array
 {
     const { hasher: mainHasher } = createConfiguredHasher( options );
 
@@ -823,9 +825,9 @@ export function objectHashBytes( obj: any, options: Partial<ObjectStringifyOptio
 
 export class Hasher
 {
-    #options: Partial<ObjectStringifyOptions>;
+    #options : Partial<ObjectStringifyOptions>;
 
-    constructor( options: Partial<ObjectStringifyOptions> = {} )
+    constructor( options: Partial<ObjectStringifyOptions> = {})
     {
         this.#options = options;
     }
@@ -848,12 +850,12 @@ export class Hasher
 
 export class StreamingHash
 {
-    #options: Partial<ObjectStringifyOptions>;
-    #stringifyOptions: NormalizedStringifyOptions;
-    #hasher!: HasherAdapter;
-    #encoding!: Encoding;
+    #options          : Partial<ObjectStringifyOptions>;
+    #stringifyOptions : NormalizedStringifyOptions;
+    #hasher!          : HasherAdapter;
+    #encoding!        : Encoding;
 
-    constructor( options: Partial<ObjectStringifyOptions> = {} )
+    constructor( options: Partial<ObjectStringifyOptions> = {})
     {
         this.#options = options;
         this.#stringifyOptions = normalizeStringifyOptions( options );
